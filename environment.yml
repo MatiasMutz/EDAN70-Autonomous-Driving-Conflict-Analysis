@@ -9,4 +9,5 @@ dependencies:
   - matplotlib
   - zarr
   - jupyter
-  - pip 
+  - pip
+  - pandas 
