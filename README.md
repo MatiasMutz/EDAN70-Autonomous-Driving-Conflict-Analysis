@@ -18,6 +18,11 @@ This project uses Conda for environment management. Follow these steps to set up
    ```bash
    conda activate conflict-resolution
    ```
+   If on mac and does not work you are probably using zsh terminal run the following and then again command above:
+   ```bash
+   conda init zsh
+   ```
+
 
 3. Follow the instructions in the jupyter notebook to run the code.
 
