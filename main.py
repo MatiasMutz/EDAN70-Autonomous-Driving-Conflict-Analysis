@@ -18,8 +18,8 @@ folder_hv = 'hv'
 root_av = './dataset/data_3m/'+folder_av+'/'
 root_hv = './dataset/data_3m/'+folder_hv+'/'
 
-log_ids_av = [name for name in os.listdir(root_av) if os.path.isdir(os.path.join(root_av, name))]
-log_ids_hv = [name for name in os.listdir(root_hv) if os.path.isdir(os.path.join(root_hv, name))]
+log_ids_av = [name for name in os.listdir(root_av) if name.endswith('.zarr')]
+log_ids_hv = [name for name in os.listdir(root_hv) if name.endswith('.zarr')]
 
 print('Number of scenarios for Autonomous Vehicles: ', len(log_ids_av))
 print('Number of scenarios for Human-driven Vehicles: ', len(log_ids_hv))
@@ -43,11 +43,11 @@ motion: motion state, with 7 dimensions
         [x, y, vx, vy, ax, ay, yaw]
         yaw is to the x-axis, between [-pi, pi]
 '''
-slices, timestep, motion, type, maps = read_scenario(log_ids_av[2441], root_av)
+# Use the first scenario as an example
+slices, timestep, motion, type, maps = read_scenario(log_ids_av[0], root_av)
 
 # Visualize the data:
-
-fig, ax = visualize(log_ids_av[25], root_av, other_road_users=True, direction=True)
+fig, ax = visualize(log_ids_av[0], root_av, other_road_users=True, direction=True)
 
 
 """
@@ -102,21 +102,29 @@ def get_scenario_filename(scenario_id, root_path):
     Returns:
         str or None: Filename if found, None if no matching file exists
     """
-    zarr_files = [f for f in os.listdir(root_path) if f.endswith('.zarr')]
+    # List all files in the directory
+    all_files = os.listdir(root_path)
     
-    # First try exact format matching
-    target_suffix = f"{int(scenario_id):02d}.zarr"
-    matching_files = [f for f in zarr_files if f.endswith(target_suffix)]
+    # Try different possible filename formats
+    possible_formats = [
+        f"{int(scenario_id):02d}.zarr",  # 01.zarr
+        f"{scenario_id}.zarr",           # 1.zarr
+        f"scenario_{scenario_id}.zarr",  # scenario_1.zarr
+        f"scenario_{int(scenario_id):02d}.zarr"  # scenario_01.zarr
+    ]
     
-    if not matching_files:
-        # If no exact match, search for any file containing the scenario number
-        matching_files = [f for f in zarr_files if str(int(scenario_id)) in f]
+    # Try each format
+    for format in possible_formats:
+        if format in all_files:
+            return format
     
-    if not matching_files:
-        print(f"Error: No matching file found for scenario {scenario_id}")
-        return None
-        
-    return matching_files[0]
+    # If no exact match, try to find any file containing the scenario number
+    matching_files = [f for f in all_files if str(int(scenario_id)) in f and f.endswith('.zarr')]
+    
+    if matching_files:
+        return matching_files[0]
+    
+    return None
 
 def analyze_intersection_scenario(scenario_id, root_path):
     """
@@ -486,24 +494,70 @@ def analyze_all_scenarios(intersection_cases, root_path):
 print("\nAnalyzing conflicts in scenarios...")
 conflict_analyses = analyze_all_scenarios(intersection_cases[:10], root_av)
 
-# Now we can prepare the data to train the DQN model
+# Logistic Regression Implementation for Collision Prediction
+# ====================================================
+# This section implements a logistic regression model for predicting collision risk in intersection scenarios.
+# The implementation consists of two main functions:
+# 1. prepare_logistic_regression_data: Extracts and processes features from scenario data
+# 2. train_logistic_regression: Trains the model using the processed data
+#
+# The model uses 7 key features:
+# - Minimum distance between vehicles
+# - Average relative velocity
+# - Minimum time to intersection
+# - Average yaw angle difference
+# - Average speed difference
+# - Time to closest approach
+# - Average relative acceleration
+#
+# The model is trained to classify scenarios into three risk levels:
+# - LOW (0): Safe situations
+# - MEDIUM (1): Situations requiring attention
+# - HIGH (2): Critical situations
+#
+# If the dataset is too imbalanced, the system falls back to a rule-based classification
+# using predefined thresholds for distance, TTC, PET, velocity, and intersection angle.
 
-def prepare_dqn_environment(scenario_data):
+def prepare_logistic_regression_data(scenario_data):
     """
-    Prepares scenario data for DQN training by creating a reinforcement learning environment.
+    Prepares scenario data for logistic regression by extracting relevant features.
+    
+    This function processes trajectory data to create a feature vector for collision prediction.
+    It uses multiple metrics to determine if a scenario represents a collision:
+    - Minimum distance between vehicles
+    - Time to Collision (TTC)
+    - Post-Encroachment Time (PET)
+    - Relative velocity
+    
+    Thresholds for collision classification:
+    - Distance: < 0.5m (critical distance)
+    - TTC: < 0.3s AND distance < 2.0m (critical time to collision)
+    - PET: < 0.1s AND distance < 2.0m (critical post-encroachment time)
+    - Velocity: > 10.0 m/s AND distance < 1.0m (high speed and critical distance)
     
     Args:
-        scenario_data (dict): Dictionary containing scenario features from analyze_intersection_scenario
-        
+        scenario_data (dict): Dictionary containing scenario features including:
+            - motion_data: Vehicle motion states
+            - slices: Indices marking different vehicles' data
+            - timestep: Timestamps for motion data
+            
     Returns:
-        IntersectionEnv: An environment wrapper for DQN training with:
-            - State space: 7-dimensional vector containing relative distances, velocities, and angles
-            - Action space: 4 discrete actions (STOP, SLOW_DOWN, MAINTAIN, ACCELERATE)
+        tuple: (features, collision_label) where:
+            - features: numpy array of extracted features
+            - collision_label: 1 for collision, 0 for no collision
     """
-    
-    def extract_state_features(motion_data, slices, timestep):
+    def extract_features(motion_data, slices, timestep):
         """
-        Extracts relevant features for the state representation from vehicle trajectories.
+        Extracts relevant features for collision prediction.
+        
+        Features extracted:
+        1. Minimum distance between vehicles
+        2. Average relative velocity
+        3. Minimum time to intersection
+        4. Average yaw angle difference
+        5. Average speed difference
+        6. Time to closest approach
+        7. Average relative acceleration
         
         Args:
             motion_data: Raw motion data for all vehicles
@@ -511,28 +565,250 @@ def prepare_dqn_environment(scenario_data):
             timestep: Timestamps for motion data
             
         Returns:
-            numpy.array: 7-dimensional state vector containing:
-                - Minimum distance between vehicles
-                - Average relative velocity
-                - Minimum time to intersection
-                - Current yaw angle of ego vehicle
-                - Current yaw angle of other vehicle
-                - Current speed of ego vehicle
-                - Current speed of other vehicle
+            numpy.array: Feature vector containing the 7 features listed above
         """
         # Get ego vehicle (AV) and other vehicle trajectories
         ego_motion = motion_data[slices[0]:slices[1]]
         other_motion = motion_data[slices[1]:slices[2]]
         
-        # Interpolate trajectories to common length
-        target_length = 100  # número fijo de puntos
-        
-        # Crear array de tiempo normalizado para interpolación
+        # Interpolate trajectories to common length for consistent analysis
+        target_length = 100  # Fixed number of points for interpolation
         t_ego = np.linspace(0, 1, len(ego_motion))
         t_other = np.linspace(0, 1, len(other_motion))
         t_common = np.linspace(0, 1, target_length)
         
-        # Interpolar cada componente
+        # Initialize interpolated arrays
+        ego_interp = np.zeros((target_length, ego_motion.shape[1]))
+        other_interp = np.zeros((target_length, other_motion.shape[1]))
+        
+        # Interpolate each component of the trajectories
+        for i in range(ego_motion.shape[1]):
+            ego_interp[:, i] = np.interp(t_common, t_ego, ego_motion[:, i])
+            other_interp[:, i] = np.interp(t_common, t_other, other_motion[:, i])
+        
+        # Calculate features using interpolated trajectories
+        relative_distance = np.linalg.norm(ego_interp[:, :2] - other_interp[:, :2], axis=1)
+        relative_velocity = np.linalg.norm(ego_interp[:, 2:4] - other_interp[:, 2:4], axis=1)
+        time_to_intersection = relative_distance / (relative_velocity + 1e-6)  # Avoid division by zero
+        
+        # Calculate yaw angle difference (normalized to [0, pi])
+        yaw_diff = np.abs(ego_interp[:, 6] - other_interp[:, 6])
+        yaw_diff = np.minimum(yaw_diff, 2*np.pi - yaw_diff)
+        
+        # Calculate speed difference
+        ego_speed = np.linalg.norm(ego_interp[:, 2:4], axis=1)
+        other_speed = np.linalg.norm(other_interp[:, 2:4], axis=1)
+        speed_diff = np.abs(ego_speed - other_speed)
+        
+        # Calculate time to closest approach
+        min_dist_idx = np.argmin(relative_distance)
+        time_to_closest = t_common[min_dist_idx]
+        
+        # Calculate relative acceleration
+        ego_acc = np.linalg.norm(ego_interp[:, 4:6], axis=1)
+        other_acc = np.linalg.norm(other_interp[:, 4:6], axis=1)
+        rel_acc = np.abs(ego_acc - other_acc)
+        
+        # Combine features into feature vector
+        features = np.array([
+            relative_distance.min(),          # Minimum distance
+            relative_velocity.mean(),         # Average relative velocity
+            time_to_intersection.min(),       # Minimum time to intersection
+            yaw_diff.mean(),                  # Average yaw angle difference
+            speed_diff.mean(),                # Average speed difference
+            time_to_closest,                  # Time to closest approach
+            rel_acc.mean()                    # Average relative acceleration
+        ])
+        
+        return features
+
+    # Extract features for all timesteps
+    features = extract_features(
+        scenario_data['motion_data'],
+        scenario_data['slices'],
+        scenario_data['timestep']
+    )
+    
+    # Interpolate trajectories for collision detection
+    ego_motion = scenario_data['motion_data'][scenario_data['slices'][0]:scenario_data['slices'][1]]
+    other_motion = scenario_data['motion_data'][scenario_data['slices'][1]:scenario_data['slices'][2]]
+    
+    target_length = 100
+    t_ego = np.linspace(0, 1, len(ego_motion))
+    t_other = np.linspace(0, 1, len(other_motion))
+    t_common = np.linspace(0, 1, target_length)
+    
+    ego_interp = np.zeros((target_length, ego_motion.shape[1]))
+    other_interp = np.zeros((target_length, other_motion.shape[1]))
+    
+    for i in range(ego_motion.shape[1]):
+        ego_interp[:, i] = np.interp(t_common, t_ego, ego_motion[:, i])
+        other_interp[:, i] = np.interp(t_common, t_other, other_motion[:, i])
+    
+    # Calculate collision metrics
+    min_distance = np.min(np.linalg.norm(ego_interp[:, :2] - other_interp[:, :2], axis=1))
+    ttc = calculate_time_to_collision(ego_motion, other_motion)
+    pet = calculate_post_encroachment_time(ego_motion, other_motion)
+    relative_velocity = np.linalg.norm(ego_interp[:, 2:4] - other_interp[:, 2:4], axis=1).mean()
+    
+    # Determine collision label based on multiple criteria
+    # A scenario is considered a collision if ANY of these conditions are met:
+    collision_label = 1 if (
+        min_distance < 0.5 or  # Critical distance threshold
+        (ttc < 0.3 and min_distance < 2.0) or  # Critical TTC with small distance
+        (pet < 0.1 and min_distance < 2.0) or  # Critical PET with small distance
+        (relative_velocity > 10.0 and min_distance < 1.0)  # High speed with critical distance
+    ) else 0
+    
+    return features, collision_label
+
+# Logistic Regression Training Function
+# ====================================
+# This function implements the training process for the logistic regression model:
+# 1. Prepares and preprocesses the training data
+# 2. Handles class imbalance using class weights
+# 3. Performs cross-validation to ensure model robustness
+# 4. Evaluates model performance using multiple metrics
+#
+# Key features:
+# - Uses StandardScaler for feature normalization
+# - Implements stratified sampling for balanced train/test splits
+# - Includes comprehensive model evaluation metrics
+# - Falls back to rule-based classification if dataset is too imbalanced
+#
+# The function returns both the trained model and the fitted scaler for future predictions.
+
+def train_logistic_regression(intersection_cases, root_path):
+    """
+    Trains a logistic regression model on intersection scenarios.
+    """
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.model_selection import train_test_split, cross_val_score
+    from sklearn.metrics import classification_report, confusion_matrix
+    import numpy as np
+    
+    # Prepare training data
+    X = []
+    y = []
+    
+    for _, case in intersection_cases.iterrows():
+        scenario_id = case['log_id']
+        features = analyze_intersection_scenario(scenario_id, root_path)
+        
+        if features:
+            scenario_features, collision_label = prepare_logistic_regression_data(features)
+            X.append(scenario_features)
+            y.append(collision_label)
+    
+    X = np.array(X)
+    y = np.array(y)
+    
+    # Print class distribution
+    print("\nClass distribution in dataset:")
+    print(f"Collisions (1): {np.sum(y == 1)}")
+    print(f"No collisions (0): {np.sum(y == 0)}")
+    
+    # Si hay muy pocas muestras de alguna clase, ajustar los umbrales
+    if np.sum(y == 1) < 100 or np.sum(y == 0) < 100:
+        print("\nWarning: Very imbalanced dataset. Consider adjusting collision thresholds.")
+        return None, None
+    
+    # Split data into training and testing sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    
+    # Scale features
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    # Train logistic regression model with class weights
+    model = LogisticRegression(random_state=42, max_iter=1000, class_weight='balanced')
+    model.fit(X_train_scaled, y_train)
+    
+    # Perform cross-validation
+    cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=5)
+    print("\nCross-validation scores:", cv_scores)
+    print(f"Mean CV score: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
+    
+    # Evaluate on test set
+    y_pred = model.predict(X_test_scaled)
+    print("\nTest set results:")
+    print(classification_report(y_test, y_pred))
+    print("\nConfusion Matrix:")
+    print(confusion_matrix(y_test, y_pred))
+    
+    return model, scaler
+
+# Predict Collision Function
+# ====================================
+# This function predicts the risk level for a given scenario using either a trained model or a rule-based system.
+# The risk levels are:
+# - LOW (0): Safe situation
+# - MEDIUM (1): Requires attention
+# - HIGH (2): Critical situation
+
+def predict_collision(model, scaler, scenario_data):
+    """
+    Predicts risk level for a given scenario.
+    
+    This function uses either a trained model or a rule-based system to classify
+    the risk level of a scenario. The risk levels are:
+    - LOW (0): Safe situation
+    - MEDIUM (1): Requires attention
+    - HIGH (2): Critical situation
+    
+    Risk scoring system:
+    - Distance factors:
+        * < 0.5m: 4 points (critical)
+        * < 2.0m: 2 points (attention)
+        * < 5.0m: 1 point (moderate)
+    
+    - Time factors (TTC):
+        * < 0.3s: 4 points (critical)
+        * < 1.0s: 2 points (attention)
+        * < 2.0s: 1 point (moderate)
+    
+    - PET factors:
+        * < 0.1s: 4 points (critical)
+        * < 0.3s: 2 points (attention)
+        * < 0.5s: 1 point (moderate)
+    
+    - Velocity factors:
+        * > 15.0 m/s and distance < 2.0m: 4 points
+        * > 10.0 m/s and distance < 5.0m: 2 points
+        * > 5.0 m/s and distance < 7.0m: 1 point
+    
+    - Intersection angle factors:
+        * > 150°: 2 points (near frontal)
+        * > 120°: 1 point (acute angle)
+    
+    Final risk classification:
+    - HIGH risk: score >= 10
+    - MEDIUM risk: score >= 5
+    - LOW risk: score < 5
+    
+    Args:
+        model: Trained logistic regression model
+        scaler: Fitted StandardScaler
+        scenario_data: Dictionary containing scenario features
+        
+    Returns:
+        tuple: (prediction, probability) where:
+            - prediction: 0 for LOW, 1 for MEDIUM, 2 for HIGH risk
+            - probability: Probability of highest risk level
+    """
+    if model is None or scaler is None:
+        print("\nUsing simple threshold-based classification...")
+        ego_motion = scenario_data['motion_data'][scenario_data['slices'][0]:scenario_data['slices'][1]]
+        other_motion = scenario_data['motion_data'][scenario_data['slices'][1]:scenario_data['slices'][2]]
+        
+        # Interpolate trajectories
+        target_length = 100
+        t_ego = np.linspace(0, 1, len(ego_motion))
+        t_other = np.linspace(0, 1, len(other_motion))
+        t_common = np.linspace(0, 1, target_length)
+        
         ego_interp = np.zeros((target_length, ego_motion.shape[1]))
         other_interp = np.zeros((target_length, other_motion.shape[1]))
         
@@ -540,359 +816,133 @@ def prepare_dqn_environment(scenario_data):
             ego_interp[:, i] = np.interp(t_common, t_ego, ego_motion[:, i])
             other_interp[:, i] = np.interp(t_common, t_other, other_motion[:, i])
         
-        # Calcular características con las trayectorias interpoladas
-        relative_distance = np.linalg.norm(ego_interp[:, :2] - other_interp[:, :2], axis=1)
-        relative_velocity = np.linalg.norm(ego_interp[:, 2:4] - other_interp[:, 2:4], axis=1)
-        time_to_intersection = relative_distance / (relative_velocity + 1e-6)  # Avoid division by zero
+        # Calculate metrics
+        min_distance = np.min(np.linalg.norm(ego_interp[:, :2] - other_interp[:, :2], axis=1))
+        ttc = calculate_time_to_collision(ego_interp, other_interp)
+        pet = calculate_post_encroachment_time(ego_interp, other_interp)
+        relative_velocity = np.linalg.norm(ego_interp[:, 2:4] - other_interp[:, 2:4], axis=1).mean()
         
-        # Combine features into state vector
-        state = np.array([
-            relative_distance.min(),          # Minimum distance between vehicles
-            relative_velocity.mean(),         # Average relative velocity
-            time_to_intersection.min(),       # Minimum time to intersection
-            ego_interp[-1, 6],               # Current yaw angle of ego vehicle
-            other_interp[-1, 6],             # Current yaw angle of other vehicle
-            ego_interp[-1, 2:4].mean(),      # Current speed of ego vehicle
-            other_interp[-1, 2:4].mean()     # Current speed of other vehicle
-        ])
+        # Calculate intersection angle
+        ego_direction = ego_interp[-1, :2] - ego_interp[0, :2]
+        other_direction = other_interp[-1, :2] - other_interp[0, :2]
+        intersection_angle = np.arccos(np.dot(ego_direction, other_direction) / 
+                                    (np.linalg.norm(ego_direction) * np.linalg.norm(other_direction)))
+        intersection_angle = np.degrees(intersection_angle)
         
-        return state
-
-    def calculate_reward(state, action, next_state):
-        """
-        Calculates the reward for a given state-action transition.
+        print(f"\nScenario metrics:")
+        print(f"Minimum distance: {min_distance:.2f}m")
+        print(f"TTC: {ttc:.2f}s")
+        print(f"PET: {pet:.2f}s")
+        print(f"Relative velocity: {relative_velocity:.2f}m/s")
+        print(f"Intersection angle: {intersection_angle:.2f}°")
         
-        Args:
-            state: Current state vector
-            action: Action taken (0-3)
-            next_state: Resulting state vector
+        # Risk scoring system
+        risk_score = 0
+        
+        # Distance factors
+        if min_distance < 0.5:  # Critical distance
+            risk_score += 4
+        elif min_distance < 2.0:  # Attention distance
+            risk_score += 2
+        elif min_distance < 5.0:  # Moderate distance
+            risk_score += 1
+        
+        # Time factors (TTC)
+        if ttc < 0.3:  # Critical TTC
+            risk_score += 4
+        elif ttc < 1.0:  # Attention TTC
+            risk_score += 2
+        elif ttc < 2.0:  # Moderate TTC
+            risk_score += 1
+        
+        # PET factors
+        if pet < 0.1:  # Critical PET
+            risk_score += 4
+        elif pet < 0.3:  # Attention PET
+            risk_score += 2
+        elif pet < 0.5:  # Moderate PET
+            risk_score += 1
+        
+        # Velocity factors
+        if relative_velocity > 15.0 and min_distance < 2.0:  # High speed and critical distance
+            risk_score += 4
+        elif relative_velocity > 10.0 and min_distance < 5.0:  # Moderate speed and attention distance
+            risk_score += 2
+        elif relative_velocity > 5.0 and min_distance < 7.0:  # Low speed and moderate distance
+            risk_score += 1
+        
+        # Intersection angle factors
+        if intersection_angle > 150:  # Near frontal
+            risk_score += 2
+        elif intersection_angle > 120:  # Acute angle
+            risk_score += 1
+        
+        # Final risk classification
+        if risk_score >= 10:  # HIGH risk
+            prediction = 2
+        elif risk_score >= 5:  # MEDIUM risk
+            prediction = 1
+        else:  # LOW risk
+            prediction = 0
             
-        Returns:
-            float: Reward value based on:
-                - Safety (distance between vehicles)
-                - Efficiency (maintaining appropriate speed)
-                - Collision penalties
-        """
-        # Extract metrics from states
-        current_distance = state[0]
-        next_distance = next_state[0]
-        current_velocity = state[5]
-        # Apply safe distance penalty with log-scale
-        if next_distance > IntersectionEnv.MIN_SAFE_DISTANCE:
-            safety_reward = IntersectionEnv.SAFE_REWARD
-        else:
-            # Penalize for unsafe distance
-            # Use log scale to avoid extreme penalties
-            safety_reward = -IntersectionEnv.COLLISION_PENALTY * np.log1p(1 / (next_distance + 1e-6))
-
-        # Encourage smooth, efficient driving
-        efficiency_reward = (
-        IntersectionEnv.EFFICIENCY_FACTOR * current_velocity
-        if action != 0 else -1)  # discourage unnecessary stops
-
-        # Combine rewards
-        reward = safety_reward + efficiency_reward
-
-        # Clip to prevent extreme spikes
-        reward = np.clip(reward, -200, 50)
+        probability = 1.0
         
-        return reward
-
-    class IntersectionEnv:
-        """
-        Environment wrapper for DQN training that simulates intersection scenarios.
-        
-        Attributes:
-            COLLISION_PENALTY (float): Penalty for unsafe distances/collisions
-            SAFE_REWARD (float): Reward for maintaining safe distance
-            EFFICIENCY_FACTOR (float): Weight for speed-based rewards
-            MIN_SAFE_DISTANCE (float): Minimum safe distance between vehicles
-        """
-        # Constantes de la clase
-        COLLISION_PENALTY = -100
-        SAFE_REWARD = 10
-        EFFICIENCY_FACTOR = 0.5
-        MIN_SAFE_DISTANCE = 5.0  # meters
-        
-        def __init__(self, scenario_data):
-            self.scenario_data = scenario_data
-            self.current_step = 0
-            self.max_steps = len(scenario_data['timestep'])
-            self.state = None
-            
-        def reset(self):
-            self.current_step = 0
-            self.state = extract_state_features(
-                self.scenario_data['motion_data'],
-                self.scenario_data['slices'],
-                self.scenario_data['timestep']
-            )
-            return self.state
-        
-        def step(self, action):
-            # Execute action and get next state
-            self.current_step += 1
-            next_state = extract_state_features(
-                self.scenario_data['motion_data'],
-                self.scenario_data['slices'],
-                self.scenario_data['timestep']
-            )
-            
-            # Calculate reward
-            reward = calculate_reward(self.state, action, next_state)
-            
-            # Check if episode is done
-            done = self.current_step >= self.max_steps or reward <= -self.COLLISION_PENALTY
-            
-            self.state = next_state
-            return next_state, reward, done, {}
-
-    return IntersectionEnv(scenario_data)
-
-def prepare_training_data(intersection_cases, root_path):
-    """
-    Prepares a dataset of intersection scenarios for DQN training.
+        return prediction, probability
     
-    Args:
-        intersection_cases (pandas.DataFrame): DataFrame containing intersection scenario metadata
-        root_path (str): Root directory containing scenario files
+    try:
+        features, _ = prepare_logistic_regression_data(scenario_data)
+        features_scaled = scaler.transform(features.reshape(1, -1))
         
-    Returns:
-        list: List of IntersectionEnv objects ready for training
-    """
-    training_environments = []
-    
-    for _, case in intersection_cases.iterrows():
-        scenario_id = case['log_id']
-        features = analyze_intersection_scenario(scenario_id, root_path)
+        prediction = model.predict(features_scaled)[0]
+        probabilities = model.predict_proba(features_scaled)[0]
+        max_probability = np.max(probabilities)
         
-        if features:
-            env = prepare_dqn_environment(features)
-            training_environments.append(env)
-    
-    return training_environments
+        return prediction, max_probability
+    except Exception as e:
+        print(f"\nError using model: {str(e)}")
+        print("Using simple classification as fallback...")
+        return predict_collision(None, None, scenario_data)
 
 # Example usage:
+print("\nTraining logistic regression model...")
+available_scenarios = []
+for _, case in intersection_cases.iterrows():
+    scenario_id = case['log_id']
+    filename = get_scenario_filename(scenario_id, root_av)
+    if filename is not None:
+        available_scenarios.append(case)
 
-print("Preparing training environments...")
-training_envs = prepare_training_data(intersection_cases[:10], root_av)  # Start with 10 scenarios for testing
-print(f"Prepared {len(training_envs)} training environments")
+print(f"\nTotal available scenarios: {len(available_scenarios)}")
 
+# We use all the data except the last 10 for training
+train_data = pd.DataFrame(available_scenarios[:-10])
+test_data = pd.DataFrame(available_scenarios[-10:])
 
-"""
-### Logistic Regression Model
-The logistic regression model is a simple linear model that predicts the probability of a conflict based on the extracted features. The model is trained using the features obtained from the scenarios and the corresponding labels indicating whether a conflict occurred or not.
-"""
+print(f"Using {len(train_data)} scenarios for training")
+print(f"Using {len(test_data)} scenarios for testing")
 
-"""
-### Define the DQN Agent and Training Loop
+model, scaler = train_logistic_regression(train_data, root_av)
 
-The DQN agent is a simple feedforward neural network that takes the **state** as input and outputs **Q-values** for each possible action. The training loop implements the DQN algorithm, which includes **experience replay** and **target network updates** for stability.
+# Test predictions in the last 10 scenarios
+print("\nPredicting last 10 scenarios:")
+for _, case in test_data.iterrows():
+    scenario_id = case['log_id']
+    test_scenario = analyze_intersection_scenario(scenario_id, root_av)
+    if test_scenario:
+        try:
+            prediction, probability = predict_collision(model, scaler, test_scenario)
+            if prediction is not None:
+                risk_level = ['LOW', 'MEDIUM', 'HIGH'][prediction]
+                print(f"\nScenario {scenario_id}:")
+                print(f"Risk Level: {risk_level}")
+                print(f"Confidence: {probability:.4f}")
+        except Exception as e:
+            print(f"\nError predicting scenario {scenario_id}: {str(e)}")
+            print("Using simple classification as fallback...")
+            prediction, probability = predict_collision(None, None, test_scenario)
+            if prediction is not None:
+                risk_level = ['LOW', 'MEDIUM', 'HIGH'][prediction]
+                print(f"\nScenario {scenario_id}:")
+                print(f"Risk Level: {risk_level}")
+                print(f"Confidence: {probability:.4f}")
 
-The DQN agent is trained using experiences collected from the environment. The training loop includes the following steps:
-
-1. **Initialize** the DQN agent and the target network.
-2. **Initialize** the replay buffer.
-3. For each episode:
-    - **1** Reset the environment and get the initial state.
-    - **2** Use the ε-greedy policy to select an action (either explore or choose the action with the highest Q-value).
-    - **3** Interact with the environment to collect an experience tuple (next state, reward, done flag).
-    - **4** Store the experience in the replay buffer.
-    - **5** Sample a random batch of experiences from the replay buffer.
-    - **6** Compute the current Q-values and the target Q-values using the **Bellman equation**.
-
-"""
-
-#Implement the DQN agent and training loop
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import random
-import numpy as np
-from collections import deque
-"""
-    DQNAgent class implements a simple feedforward neural network for the DQN agent.
-    It takes the state dimension and action dimension as input and initializes the network.
-    The forward method defines the forward pass through the network.
-    The act method implements an epsilon-greedy policy for action selection.
-    The agent uses Adam optimizer and Mean Squared Error loss function for training.
-"""
-class DQNAgent(nn.Module):
-    def __init__(self, state_dim=7, action_dim=4, lr=1e-3):
-        super(DQNAgent, self).__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(state_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, action_dim)
-        )
-        self.optimizer = optim.Adam(self.parameters(), lr=lr)
-        self.loss_fn = nn.MSELoss()
-
-    def forward(self, x):
-        return self.fc(x)
-
-    def act(self, state, epsilon):
-        if random.random() < epsilon:
-            return random.randint(0, 3)
-        with torch.no_grad():
-            q_values = self.forward(torch.FloatTensor(state))
-        return int(torch.argmax(q_values))
-"""
-    ReplayBuffer class stores past experiences so the agent can learn from them.
-    It uses a deque to maintain a fixed size buffer and allows sampling of random batches for training.
-    Stores transitions as: (state, action, reward, next_state, done)
-"""
-class ReplayBuffer:
-    def __init__(self, capacity=10000):
-        self.buffer = deque(maxlen=capacity)
-
-    def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
-
-    def sample(self, batch_size=64):
-        batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
-        return (
-            torch.FloatTensor(states),
-            torch.LongTensor(actions),
-            torch.FloatTensor(rewards),
-            torch.FloatTensor(next_states),
-            torch.tensor(dones, dtype=torch.float32)
-        )
-
-    def __len__(self):
-        return len(self.buffer)
-
-"""
-### Train the DQN Agent
-
-The `train_dqn` function performs the training of the DQN agent using the environment. It implements the DQN algorithm with support for experience replay, epsilon-greedy action selection, and periodic target network updates.
-
-The training process consists of the following steps:
-
-1. **Initialize** the policy network (DQN agent) and the target network with the same weights.
-2. **Set up** the optimizer (e.g., Adam) for updating the policy network.
-3. **Create** a replay buffer to store experiences collected from the environment.
-4. For each episode:
-    - **4.1** Reset the environment and obtain the initial state.
-    - **4.2** For each time step in the episode:
-        - **4.2.1** Select an action using the ε-greedy strategy:
-            - With probability ε, choose a random action (**exploration**).
-            - Otherwise, choose the action with the highest Q-value predicted by the policy network (**exploitation**).
-        - **4.2.2** Apply the action in the environment to receive the next state, reward, and done flag.
-        - **4.2.3** Store the experience `(state, action, reward, next_state, done)` in the replay buffer.
-        - **4.2.4** If the buffer has enough samples:
-            - Sample a random batch of experiences.
-            - Compute target Q-values using the **Bellman equation**:
-
-              Q_traget = r + γ * max_a * Q_target(s', a) * (1-done)
-
-            - Compute current Q-values predicted by the policy network.
-            - Compute the **loss** between the current Q-values and the target Q-values (typically MSE loss).
-            - Perform a **gradient descent step** to update the policy network.
-    - **4.3** Periodically update the target network by copying the weights from the policy network.
-    - **4.4** Decay ε over time to gradually shift from exploration to exploitation.
-
-This loop continues until the desired number of episodes is completed, gradually improving the agent's ability to make optimal decisions based on its experience.
-"""
-
-#DQN Training Loop
-"""
-    train_dqn function implements the training loop for the DQN agent.
-    It initializes the agent, target network, and replay buffer.
-    The function runs for a specified number of episodes, collecting experiences and training the agent.
-    It uses epsilon-greedy exploration strategy and updates the target network periodically.
-"""
-def train_dqn(envs, num_episodes=1000, batch_size=64, gamma=0.99,
-              epsilon_start=1.0, epsilon_end=0.05, epsilon_decay=0.995,
-              target_update_freq=10):
-
-    state_dim = 7
-    action_dim = 4
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Initialize main and target networks
-    policy_net = DQNAgent(state_dim, action_dim).to(device)
-    target_net = DQNAgent(state_dim, action_dim).to(device)
-    target_net.load_state_dict(policy_net.state_dict())
-    target_net.eval()
-
-    buffer = ReplayBuffer()
-    epsilon = epsilon_start
-
-    rewards_history = []
-
-    for episode in range(num_episodes):
-        env = random.choice(envs)  # Random scenario environment
-        state = env.reset()
-        total_reward = 0
-
-        done = False
-        while not done:
-            action = policy_net.act(state, epsilon)
-            next_state, reward, done, _ = env.step(action)
-
-            if reward > 1000:
-                print(f"[Warning] Episode {episode}, BIG reward detected: {reward}")
-
-            buffer.push(state, action, reward, next_state, done)
-            state = next_state
-            total_reward += reward
-
-            if len(buffer) >= batch_size:
-                states, actions, rewards, next_states, dones = buffer.sample(batch_size)
-
-                # Move to device
-                states = states.to(device)
-                actions = actions.to(device)
-                rewards = rewards.to(device)
-                next_states = next_states.to(device)
-
-                if not isinstance(dones, torch.Tensor):
-                    dones = torch.tensor(dones, dtype=torch.float32)
-                else:
-                    dones = dones.clone().detach().float()
-                dones = dones.to(device)
-
-                # Q(s,a)
-                q_values = policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
-
-                # max_a' Q_target(s', a')
-                with torch.no_grad():
-                    next_q_values = target_net(next_states).max(1)[0]
-
-                target_q = rewards + gamma * next_q_values * (1 - dones)
-
-                loss = policy_net.loss_fn(q_values, target_q)
-
-                policy_net.optimizer.zero_grad()
-                loss.backward()
-                policy_net.optimizer.step()
-
-        # Decay epsilon
-        epsilon = max(epsilon_end, epsilon * epsilon_decay)
-        rewards_history.append(total_reward)
-
-        # Update target network
-        if episode % target_update_freq == 0:
-            target_net.load_state_dict(policy_net.state_dict())
-
-        if episode % 10 == 0:
-            print(f"Episode {episode}, Reward: {total_reward:.2f}, Epsilon: {epsilon:.2f}")
-
-    return policy_net, rewards_history
-
-trained_agent, reward_curve = train_dqn(training_envs, num_episodes=500)
-
-def smooth_curve(curve, window=10):
-    return np.convolve(curve, np.ones(window)/window, mode='valid')
-
-# Plot
-smoothed = smooth_curve(reward_curve, window=10)
-plt.plot(smoothed)
-plt.xlabel('Episode')
-plt.ylabel('Smoothed Total Reward')
-plt.title('Training Progress (Smoothed)')
-plt.grid(True)

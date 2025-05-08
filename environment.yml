@@ -10,4 +10,5 @@ dependencies:
   - zarr
   - jupyter
   - pip
-  - pandas 
+  - pandas
+  - scikit-learn 

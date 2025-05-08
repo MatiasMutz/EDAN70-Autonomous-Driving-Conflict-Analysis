@@ -7,11 +7,11 @@ from scipy.spatial import ConvexHull
 def read_scenario(filename, root):
     dt = zarr.open(root+filename, mode='r')
 
-    slices = dt.index[:]
-    timestep = dt.timestep[:]
-    motion = dt.motion[:]
-    type = dt.category[:]
-    maps = dt.lane[:]
+    slices = dt['index'][:]
+    timestep = dt['timestep'][:]
+    motion = dt['motion'][:]
+    type = dt['category'][:]
+    maps = dt['lane'][:]
 
     return slices, timestep, motion, type, maps
 
@@ -103,12 +103,12 @@ def identify_direction(xi, yi, ti, xj, yj, tj):
 def visualize(filename, root, other_road_users=True, direction=True):
     dt = zarr.open(root+filename, mode='r')
 
-    slices = dt.index[:]
-    timestep = dt.timestep[:]
-    motion = dt.motion[:]
-    types = dt.category[:]
+    slices = dt['index'][:]
+    timestep = dt['timestep'][:]
+    motion = dt['motion'][:]
+    types = dt['category'][:]
     typelist = ['human-driven vehicles' if t==0 else 'pedestrians' if t==1 else 'motorcyclists' if t==2 else 'cyclists' if t==3 else 'buses' if t==4 else 'autonomous vehicles' if t==10 else 'static backrgound' for t in types]
-    maps = dt.lane[:]
+    maps = dt['lane'][:]
 
     fig, ax = plt.subplots(figsize=(7,7))
 
