@@ -1,6 +1,3 @@
-# The first thing we do is to import the necessary libraries. As seen in the dataset github repository
-# (https://github.com/RomainLITUD/conflict_resolution_dataset) we need to import the following libraries:
-
 import numpy as np
 from scipy.io import loadmat
 import matplotlib.pyplot as plt
@@ -9,8 +6,6 @@ import pandas as pd
 import zarr
 import os
 from dataset.visual_utils import *
-
-# Read and visualize data:
 
 folder_av = 'av'
 folder_hv = 'hv'
@@ -23,8 +18,6 @@ log_ids_hv = [name for name in os.listdir(root_hv) if name.endswith('.zarr')]
 
 print('Number of scenarios for Autonomous Vehicles: ', len(log_ids_av))
 print('Number of scenarios for Human-driven Vehicles: ', len(log_ids_hv))
-
-# Read the data:
 
 '''
 slices: len = nb_objects + 1, slices[n] and slices[n+1] gives the start/end indices of the n-th object
@@ -46,37 +39,7 @@ motion: motion state, with 7 dimensions
 # Use the first scenario as an example
 slices, timestep, motion, type, maps = read_scenario(log_ids_av[0], root_av)
 
-# Visualize the data:
 fig, ax = visualize(log_ids_av[0], root_av, other_road_users=True, direction=True)
-
-
-"""
-Filter the data:
-
-The metafile contains the following information:
-log_id: string, index of the scenario
-[xi_start, yi_start]: float, direction vector of the first* agent recorded in the scenario at the start** time
-[xj_start, yj_start]: float, direction vector of the second agent recorded in the scenario at the start time
-typei: str, agent type of the first agent recorded in the scenario, being one of {'AV','HV','Pedestrian','Motorcyclist','Cyclist','Bus'}
-[xi_end, yi_end]: float, direction vector of the first* agent recorded in the scenario at the end*** time
-[xj_end, yj_end]: float, direction vector of the second agent recorded in the scenario at the end time
-typej: str, agent type of the second agent recorded in the scenario, being one of {'AV','HV','Pedestrian','Motorcyclist','Cyclist','Bus'}
-direction: str, whether the second-passing vehicle moved from the left ('L-R') or the right ('R-L') of the first-passing agent
-PET: float, post-encroachment-time
-ifirst: bool, whether the first-passing agent is the first agent recorded in the scenario
-angle_start: float, angle between the direction vectors of the two agents at the start time
-angle_end: float, angle between the direction vectors of the two agents at the end time
-start: str, whether the two agents ran parallel (P), crossed (C), or ran opposite (O) to each other before reaching the conflict point
-end: str, whether the two agents ran parallel (P), crossed (C), or ran opposite (O) to each other after reaching the conflict point
-
-Notes:
-    * Note that the first agent does not necessarily pass the conflict point first.
-    ** We consider the start time as 5 seconds before the first-passing agent passed the conflict point, or the start of the record if the time before passing the conflict point is less than 5 seconds.
-    *** Similarly, the end time is 5 seconds after the second-passing vehicle passed the conflict point, or the end of the record if the time after passing the conflict point is less than 5 seconds.
-
-"""
-
-# We'll load the metafile and filter for intersection scenarios based on the 'angle_start' and 'angle_end' fields, which indicate crossing trajectories:
 
 # Load metafile for autonomous vehicles
 metafile_av = pd.read_csv('./dataset/metafile_av.csv')
@@ -89,7 +52,6 @@ intersection_cases = metafile_av[
 
 print(f"Total number of intersection scenarios: {len(intersection_cases)}")
 
-# We define three functions, one to get the scenario filename, one to analyze the scenario and one to visualize the scenario:
 
 def get_scenario_filename(scenario_id, root_path):
     """
@@ -182,7 +144,20 @@ def visualize_scenario(scenario_id, root_path):
         print(f"Error visualizing scenario {scenario_id}: {str(e)}")
         return None, None
 
-# Now, we can analyze a few sample scenarios:
+    """Visualizes a single scenario with trajectory information."""
+    try:
+        filename = get_scenario_filename(scenario_id, root_path)
+        if filename:
+            fig, ax = visualize(filename, root_path, 
+                              other_road_users=True, 
+                              direction=True)
+            plt.title(f'Scenario {scenario_id}')
+            return fig, ax
+        return None, None
+    except Exception as e:
+        print(f"Error visualizing scenario {scenario_id}: {str(e)}")
+        return None, None
+
 
 sample_size = 5
 sample_scenarios = intersection_cases['log_id'].iloc[:sample_size]
@@ -199,20 +174,18 @@ for scenario_id in sample_scenarios:
     else:
         print("Analysis failed")
 
-# Visualize sample scenarios
 fig, axs = plt.subplots(1, min(5, len(sample_scenarios)), figsize=(20, 4))
 if not isinstance(axs, np.ndarray):
     axs = [axs]
 
 for i, scenario_id in enumerate(sample_scenarios[:5]):
-    _, _ = visualize_scenario(scenario_id, root_av)
+    #_, _ = visualize_scenario(scenario_id, root_av)
     if i < len(axs):
         axs[i].set_title(f'Scenario {i+1}')
 
-plt.tight_layout()
-plt.show()
+#plt.tight_layout()
+#plt.show()
 
-# Now we can do the conflict analysis for the intersection scenarios:
 
 # Constants for conflict analysis
 CONFLICT_THRESHOLDS = {
@@ -489,34 +462,35 @@ def analyze_all_scenarios(intersection_cases, root_path):
     
     return conflict_analyses
 
-# Run the analysis for 10 scenarios
+
+import pandas as pd
+from IPython.display import display, FileLink
 
 print("\nAnalyzing conflicts in scenarios...")
 conflict_analyses = analyze_all_scenarios(intersection_cases[:10], root_av)
 
-# Logistic Regression Implementation for Collision Prediction
-# ====================================================
-# This section implements a logistic regression model for predicting collision risk in intersection scenarios.
-# The implementation consists of two main functions:
-# 1. prepare_logistic_regression_data: Extracts and processes features from scenario data
-# 2. train_logistic_regression: Trains the model using the processed data
-#
-# The model uses 7 key features:
-# - Minimum distance between vehicles
-# - Average relative velocity
-# - Minimum time to intersection
-# - Average yaw angle difference
-# - Average speed difference
-# - Time to closest approach
-# - Average relative acceleration
-#
-# The model is trained to classify scenarios into three risk levels:
-# - LOW (0): Safe situations
-# - MEDIUM (1): Situations requiring attention
-# - HIGH (2): Critical situations
-#
-# If the dataset is too imbalanced, the system falls back to a rule-based classification
-# using predefined thresholds for distance, TTC, PET, velocity, and intersection angle.
+#save the conflict analyses to a csv file
+flat_conflict_analyses = []
+for entry in conflict_analyses:
+    flat_entry = {
+        'Scenario ID': entry['scenario_id'],
+        'Conflict Type': entry['conflict_type'],
+        'Risk Level': entry['metrics']['risk_level'],
+        'TTC (s)': entry['metrics']['TTC'],
+        'PET (s)': entry['metrics']['PET'],
+        'Minimum Distance (m)': entry['metrics']['min_distance'],
+        'Timestamp': entry.get('timestamp', None)
+    }
+    flat_conflict_analyses.append(flat_entry)
+    
+conflict_analyses_df = pd.DataFrame(flat_conflict_analyses)
+conflict_analyses_df.to_csv('conflict_analyses.csv', index=False)
+print("Conflict analyses saved to")
+display(FileLink('conflict_analyses.csv'))
+
+conflict_analyses_df
+
+
 
 def prepare_logistic_regression_data(scenario_data):
     """
@@ -662,249 +636,222 @@ def prepare_logistic_regression_data(scenario_data):
     
     return features, collision_label
 
-# Logistic Regression Training Function
-# ====================================
-# This function implements the training process for the logistic regression model:
-# 1. Prepares and preprocesses the training data
-# 2. Handles class imbalance using class weights
-# 3. Performs cross-validation to ensure model robustness
-# 4. Evaluates model performance using multiple metrics
-#
-# Key features:
-# - Uses StandardScaler for feature normalization
-# - Implements stratified sampling for balanced train/test splits
-# - Includes comprehensive model evaluation metrics
-# - Falls back to rule-based classification if dataset is too imbalanced
-#
-# The function returns both the trained model and the fitted scaler for future predictions.
 
-def train_logistic_regression(intersection_cases, root_path):
+def get_binary_features_and_labels(conflict_analyses):
+    X_bin = []
+    y_bin = []
+    for entry in conflict_analyses:
+        features, label = prepare_logistic_regression_data(entry)
+        X_bin.append(features)
+        y_bin.append(label)
+    return np.array(X_bin), np.array(y_bin)
+
+
+def train_logistic_regression_binary(intersection_cases, root_path):
     """
-    Trains a logistic regression model on intersection scenarios.
+    Trains a binary logistic regression model (collision vs. no collision) using SMOTE for class balancing.
+    Evaluates with ROC and precision-recall curves.
+
+    Returns:
+        model, scaler, X_test, y_test, y_pred, y_prob, test_data
     """
     from sklearn.linear_model import LogisticRegression
     from sklearn.preprocessing import StandardScaler
     from sklearn.model_selection import train_test_split, cross_val_score
-    from sklearn.metrics import classification_report, confusion_matrix
+    from sklearn.metrics import (
+        classification_report, confusion_matrix, ConfusionMatrixDisplay,
+        roc_auc_score, roc_curve, precision_recall_curve, average_precision_score
+    )
+    from imblearn.over_sampling import SMOTE
     import numpy as np
-    
-    # Prepare training data
+    import pandas as pd
+    import matplotlib.pyplot as plt
+
+    # ---------------------------
+    # Step 1: Feature Extraction
+    # ---------------------------
     X = []
     y = []
-    
+    ids = []
+
     for _, case in intersection_cases.iterrows():
         scenario_id = case['log_id']
         features = analyze_intersection_scenario(scenario_id, root_path)
-        
         if features:
             scenario_features, collision_label = prepare_logistic_regression_data(features)
             X.append(scenario_features)
-            y.append(collision_label)
-    
+            y.append(collision_label)  # 1: collision, 0: no collision
+            ids.append(scenario_id)
+
     X = np.array(X)
     y = np.array(y)
-    
-    # Print class distribution
-    print("\nClass distribution in dataset:")
-    print(f"Collisions (1): {np.sum(y == 1)}")
-    print(f"No collisions (0): {np.sum(y == 0)}")
-    
-    # Si hay muy pocas muestras de alguna clase, ajustar los umbrales
-    if np.sum(y == 1) < 100 or np.sum(y == 0) < 100:
-        print("\nWarning: Very imbalanced dataset. Consider adjusting collision thresholds.")
-        return None, None
-    
-    # Split data into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    
-    # Scale features
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    
-    # Train logistic regression model with class weights
-    model = LogisticRegression(random_state=42, max_iter=1000, class_weight='balanced')
-    model.fit(X_train_scaled, y_train)
-    
-    # Perform cross-validation
-    cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=5)
-    print("\nCross-validation scores:", cv_scores)
-    print(f"Mean CV score: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
-    
-    # Evaluate on test set
-    y_pred = model.predict(X_test_scaled)
-    print("\nTest set results:")
-    print(classification_report(y_test, y_pred))
-    print("\nConfusion Matrix:")
-    print(confusion_matrix(y_test, y_pred))
-    
-    return model, scaler
 
-# Predict Collision Function
-# ====================================
-# This function predicts the risk level for a given scenario using either a trained model or a rule-based system.
-# The risk levels are:
-# - LOW (0): Safe situation
-# - MEDIUM (1): Requires attention
-# - HIGH (2): Critical situation
+    if len(X) == 0:
+        raise ValueError("No valid data extracted. Check feature extraction functions.")
+
+    print("\nClass distribution in dataset:")
+    print(f"No Collision (0): {np.sum(y == 0)}")
+    print(f"Collision     (1): {np.sum(y == 1)}")
+
+    if np.sum(y == 1) < 10 or np.sum(y == 0) < 10:
+        print("\n⚠️ Warning: Very imbalanced dataset. Proceeding anyway.")
+
+    # ---------------------------
+    # Step 2: Train-Test Split
+    # ---------------------------
+    X_train, X_test, y_train, y_test, ids_train, ids_test = train_test_split(
+        X, y, ids, test_size=0.2, random_state=42, stratify=y
+    )
+
+    print(f"\nTraining samples: {len(y_train)}")
+    print(f"Test samples:     {len(y_test)}")
+
+    # ---------------------------
+    # Step 3: SMOTE Balancing
+    # ---------------------------
+    sm = SMOTE(random_state=42)
+    X_train_res, y_train_res = sm.fit_resample(X_train, y_train)
+
+    print("\nAfter SMOTE:")
+    print(f"No Collision (0): {np.sum(y_train_res == 0)}")
+    print(f"Collision     (1): {np.sum(y_train_res == 1)}")
+
+    # ---------------------------
+    # Step 4: Scale Features
+    # ---------------------------
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train_res)
+    X_test_scaled = scaler.transform(X_test)
+
+    # ---------------------------
+    # Step 5: Train Model
+    # ---------------------------
+    model = LogisticRegression(
+        random_state=42,
+        max_iter=1000,
+        class_weight='balanced'
+    )
+    model.fit(X_train_scaled, y_train_res)
+
+    # ---------------------------
+    # Step 6: Evaluation
+    # ---------------------------
+    y_pred = model.predict(X_test_scaled)
+    y_prob = model.predict_proba(X_test_scaled)[:, 1]
+
+    print("\nClassification Report (Test Set):")
+    print(classification_report(y_test, y_pred, target_names=['No Collision', 'Collision']))
+
+    conf_matrix = confusion_matrix(y_test, y_pred)
+    labels = ['No Collision', 'Collision']
+    conf_df = pd.DataFrame(conf_matrix, index=labels, columns=labels)
+    print("\nConfusion Matrix:")
+    print(conf_df)
+
+    disp = ConfusionMatrixDisplay(confusion_matrix=conf_matrix, display_labels=labels)
+    disp.plot(cmap=plt.cm.Blues)
+    plt.title("Confusion Matrix")
+    plt.show()
+
+    # ROC Curve
+    auc = roc_auc_score(y_test, y_prob)
+    fpr, tpr, _ = roc_curve(y_test, y_prob)
+    plt.figure()
+    plt.plot(fpr, tpr, label=f'ROC curve (AUC = {auc:.2f})')
+    plt.plot([0, 1], [0, 1], 'k--')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curve')
+    plt.legend()
+    plt.show()
+
+    # Precision-Recall Curve
+    ap = average_precision_score(y_test, y_prob)
+    precision, recall, _ = precision_recall_curve(y_test, y_prob)
+    plt.figure()
+    plt.plot(recall, precision, label=f'PR curve (AP = {ap:.2f})')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curve')
+    plt.legend()
+    plt.show()
+
+    # ---------------------------
+    # Step 7: Return Results
+    # ---------------------------
+    test_data = pd.DataFrame({'log_id': ids_test})
+
+    return model, scaler, X_test, y_test, y_pred, y_prob, test_data
+
+
 
 def predict_collision(model, scaler, scenario_data):
     """
-    Predicts risk level for a given scenario.
-    
-    This function uses either a trained model or a rule-based system to classify
-    the risk level of a scenario. The risk levels are:
-    - LOW (0): Safe situation
-    - MEDIUM (1): Requires attention
-    - HIGH (2): Critical situation
-    
-    Risk scoring system:
-    - Distance factors:
-        * < 0.5m: 4 points (critical)
-        * < 2.0m: 2 points (attention)
-        * < 5.0m: 1 point (moderate)
-    
-    - Time factors (TTC):
-        * < 0.3s: 4 points (critical)
-        * < 1.0s: 2 points (attention)
-        * < 2.0s: 1 point (moderate)
-    
-    - PET factors:
-        * < 0.1s: 4 points (critical)
-        * < 0.3s: 2 points (attention)
-        * < 0.5s: 1 point (moderate)
-    
-    - Velocity factors:
-        * > 15.0 m/s and distance < 2.0m: 4 points
-        * > 10.0 m/s and distance < 5.0m: 2 points
-        * > 5.0 m/s and distance < 7.0m: 1 point
-    
-    - Intersection angle factors:
-        * > 150°: 2 points (near frontal)
-        * > 120°: 1 point (acute angle)
-    
-    Final risk classification:
-    - HIGH risk: score >= 10
-    - MEDIUM risk: score >= 5
-    - LOW risk: score < 5
-    
-    Args:
-        model: Trained logistic regression model
-        scaler: Fitted StandardScaler
-        scenario_data: Dictionary containing scenario features
-        
+    Predicts collision (1) or no collision (0) for a given scenario.
+    Uses a trained logistic regression model, or falls back to rule-based logic if model/scaler is unavailable.
+
     Returns:
-        tuple: (prediction, probability) where:
-            - prediction: 0 for LOW, 1 for MEDIUM, 2 for HIGH risk
-            - probability: Probability of highest risk level
+        prediction (int): 1 for collision, 0 for no collision
+        probability (float): predicted probability of collision
     """
-    if model is None or scaler is None:
-        print("\nUsing simple threshold-based classification...")
-        ego_motion = scenario_data['motion_data'][scenario_data['slices'][0]:scenario_data['slices'][1]]
-        other_motion = scenario_data['motion_data'][scenario_data['slices'][1]:scenario_data['slices'][2]]
-        
+    import numpy as np
+
+    # ---------- Fallback Rule-Based Prediction ----------
+    def rule_based_prediction(data):
+        ego_motion = data['motion_data'][data['slices'][0]:data['slices'][1]]
+        other_motion = data['motion_data'][data['slices'][1]:data['slices'][2]]
+
         # Interpolate trajectories
         target_length = 100
         t_ego = np.linspace(0, 1, len(ego_motion))
         t_other = np.linspace(0, 1, len(other_motion))
         t_common = np.linspace(0, 1, target_length)
-        
+
         ego_interp = np.zeros((target_length, ego_motion.shape[1]))
         other_interp = np.zeros((target_length, other_motion.shape[1]))
-        
         for i in range(ego_motion.shape[1]):
             ego_interp[:, i] = np.interp(t_common, t_ego, ego_motion[:, i])
             other_interp[:, i] = np.interp(t_common, t_other, other_motion[:, i])
-        
-        # Calculate metrics
-        min_distance = np.min(np.linalg.norm(ego_interp[:, :2] - other_interp[:, :2], axis=1))
-        ttc = calculate_time_to_collision(ego_interp, other_interp)
-        pet = calculate_post_encroachment_time(ego_interp, other_interp)
-        relative_velocity = np.linalg.norm(ego_interp[:, 2:4] - other_interp[:, 2:4], axis=1).mean()
-        
-        # Calculate intersection angle
-        ego_direction = ego_interp[-1, :2] - ego_interp[0, :2]
-        other_direction = other_interp[-1, :2] - other_interp[0, :2]
-        intersection_angle = np.arccos(np.dot(ego_direction, other_direction) / 
-                                    (np.linalg.norm(ego_direction) * np.linalg.norm(other_direction)))
-        intersection_angle = np.degrees(intersection_angle)
-        
-        print(f"\nScenario metrics:")
-        print(f"Minimum distance: {min_distance:.2f}m")
-        print(f"TTC: {ttc:.2f}s")
-        print(f"PET: {pet:.2f}s")
-        print(f"Relative velocity: {relative_velocity:.2f}m/s")
-        print(f"Intersection angle: {intersection_angle:.2f}°")
-        
-        # Risk scoring system
-        risk_score = 0
-        
-        # Distance factors
-        if min_distance < 0.5:  # Critical distance
-            risk_score += 4
-        elif min_distance < 2.0:  # Attention distance
-            risk_score += 2
-        elif min_distance < 5.0:  # Moderate distance
-            risk_score += 1
-        
-        # Time factors (TTC)
-        if ttc < 0.3:  # Critical TTC
-            risk_score += 4
-        elif ttc < 1.0:  # Attention TTC
-            risk_score += 2
-        elif ttc < 2.0:  # Moderate TTC
-            risk_score += 1
-        
-        # PET factors
-        if pet < 0.1:  # Critical PET
-            risk_score += 4
-        elif pet < 0.3:  # Attention PET
-            risk_score += 2
-        elif pet < 0.5:  # Moderate PET
-            risk_score += 1
-        
-        # Velocity factors
-        if relative_velocity > 15.0 and min_distance < 2.0:  # High speed and critical distance
-            risk_score += 4
-        elif relative_velocity > 10.0 and min_distance < 5.0:  # Moderate speed and attention distance
-            risk_score += 2
-        elif relative_velocity > 5.0 and min_distance < 7.0:  # Low speed and moderate distance
-            risk_score += 1
-        
-        # Intersection angle factors
-        if intersection_angle > 150:  # Near frontal
-            risk_score += 2
-        elif intersection_angle > 120:  # Acute angle
-            risk_score += 1
-        
-        # Final risk classification
-        if risk_score >= 10:  # HIGH risk
-            prediction = 2
-        elif risk_score >= 5:  # MEDIUM risk
-            prediction = 1
-        else:  # LOW risk
-            prediction = 0
-            
-        probability = 1.0
-        
-        return prediction, probability
-    
-    try:
-        features, _ = prepare_logistic_regression_data(scenario_data)
-        features_scaled = scaler.transform(features.reshape(1, -1))
-        
-        prediction = model.predict(features_scaled)[0]
-        probabilities = model.predict_proba(features_scaled)[0]
-        max_probability = np.max(probabilities)
-        
-        return prediction, max_probability
-    except Exception as e:
-        print(f"\nError using model: {str(e)}")
-        print("Using simple classification as fallback...")
-        return predict_collision(None, None, scenario_data)
 
-# Example usage:
-print("\nTraining logistic regression model...")
+        # Extract key indicators
+        min_distance = np.min(np.linalg.norm(ego_interp[:, :2] - other_interp[:, :2], axis=1))
+        ttc = calculate_time_to_collision(ego_motion, other_motion)
+        pet = calculate_post_encroachment_time(ego_motion, other_motion)
+        relative_velocity = np.linalg.norm(ego_interp[:, 2:4] - other_interp[:, 2:4], axis=1).mean()
+
+        # Apply binary collision rules
+        is_collision = (
+            min_distance < 0.5 or
+            (ttc < 0.3 and min_distance < 2.0) or
+            (pet < 0.1 and min_distance < 2.0) or
+            (relative_velocity > 10.0 and min_distance < 1.0)
+        )
+        return int(is_collision), 1.0  # Fallback always returns certainty
+
+    # ---------- Model-Based Prediction ----------
+    if model is not None and scaler is not None:
+        try:
+            features, _ = prepare_logistic_regression_data(scenario_data)
+            features_scaled = scaler.transform(features.reshape(1, -1))
+            prediction = model.predict(features_scaled)[0]
+            probability = model.predict_proba(features_scaled)[0][1]  # Probability of class '1' (collision)
+            return prediction, probability
+        except Exception as e:
+            print(f"\nError using model: {str(e)}")
+            print("Falling back to rule-based logic...\n")
+
+    # Fallback route if model is None or failed
+    return rule_based_prediction(scenario_data)
+
+
+from IPython.display import FileLink
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+import pandas as pd
+import numpy as np
+
+# Step 1: Collect scenarios with available data
+print("\nSplitting data into training and testing sets...")
 available_scenarios = []
 for _, case in intersection_cases.iterrows():
     scenario_id = case['log_id']
@@ -913,36 +860,163 @@ for _, case in intersection_cases.iterrows():
         available_scenarios.append(case)
 
 print(f"\nTotal available scenarios: {len(available_scenarios)}")
+all_data = pd.DataFrame(available_scenarios)
 
-# We use all the data except the last 10 for training
-train_data = pd.DataFrame(available_scenarios[:-10])
-test_data = pd.DataFrame(available_scenarios[-10:])
+# Step 2: Train logistic regression model
+print("\nTraining logistic regression model...")
+model, scaler, X_test, y_test, y_pred, y_prob, test_data = train_logistic_regression_binary(all_data, root_av)
+print("Model training complete.")
 
-print(f"Using {len(train_data)} scenarios for training")
-print(f"Using {len(test_data)} scenarios for testing")
+# Step 3: Predict test scenarios
+print("\nPredicting on test scenarios...")
 
-model, scaler = train_logistic_regression(train_data, root_av)
+scenario_ids = []
+risk_labels = []
+confidences = []
 
-# Test predictions in the last 10 scenarios
-print("\nPredicting last 10 scenarios:")
 for _, case in test_data.iterrows():
     scenario_id = case['log_id']
     test_scenario = analyze_intersection_scenario(scenario_id, root_av)
+
     if test_scenario:
         try:
-            prediction, probability = predict_collision(model, scaler, test_scenario)
-            if prediction is not None:
-                risk_level = ['LOW', 'MEDIUM', 'HIGH'][prediction]
-                print(f"\nScenario {scenario_id}:")
-                print(f"Risk Level: {risk_level}")
-                print(f"Confidence: {probability:.4f}")
+            features, _ = prepare_logistic_regression_data(test_scenario)
+            features_scaled = scaler.transform(features.reshape(1, -1))
+            prediction = model.predict(features_scaled)[0]
+            probability = model.predict_proba(features_scaled)[0][1]  # Probability of collision
         except Exception as e:
-            print(f"\nError predicting scenario {scenario_id}: {str(e)}")
-            print("Using simple classification as fallback...")
+            print(f"⚠️ Model error on scenario {scenario_id}: {str(e)}")
             prediction, probability = predict_collision(None, None, test_scenario)
-            if prediction is not None:
-                risk_level = ['LOW', 'MEDIUM', 'HIGH'][prediction]
-                print(f"\nScenario {scenario_id}:")
-                print(f"Risk Level: {risk_level}")
-                print(f"Confidence: {probability:.4f}")
 
+        risk_label = 'collision' if prediction == 1 else 'no collision'
+        scenario_ids.append(scenario_id)
+        risk_labels.append(risk_label)
+        confidences.append(probability)
+
+# Step 4: Create results table
+results_df = pd.DataFrame({
+    'Scenario ID': scenario_ids,
+    'Risk Label': risk_labels,
+    'Confidence': confidences
+})
+
+print("\nCounts of each risk label in test predictions:")
+print(results_df['Risk Label'].value_counts())
+
+# Save to CSV
+results_df.to_csv('all_test_predictions.csv', index=False)
+print("\nPrediction results saved as: all_test_predictions.csv")
+display(FileLink('all_test_predictions.csv'))
+
+results_df['Confidence'].hist(bins=50)
+plt.title("Distribution of Predicted Collision Probabilities")
+plt.xlabel("Predicted Probability")
+plt.ylabel("Frequency")
+plt.show()
+
+# Display the DataFrame
+results_df
+
+
+def visualize_scenario_with_prediction(scenario_id, root_av, model, scaler, conflict_map):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    scenario_data = analyze_intersection_scenario(scenario_id, root_av)
+    if not scenario_data or 'motion_data' not in scenario_data:
+        print(f"Scenario {scenario_id}: No motion data available, skipping.")
+        return
+
+    features, label = prepare_logistic_regression_data(scenario_data)
+    prediction, prob = predict_collision(model, scaler, scenario_data)
+
+    # Extract ego and other vehicle trajectories
+    ego_motion = scenario_data['motion_data'][scenario_data['slices'][0]:scenario_data['slices'][1]]
+    other_motion = scenario_data['motion_data'][scenario_data['slices'][1]:scenario_data['slices'][2]]
+
+    # Interpolate to common length for visualization
+    target_length = 100
+    t_ego = np.linspace(0, 1, len(ego_motion))
+    t_other = np.linspace(0, 1, len(other_motion))
+    t_common = np.linspace(0, 1, target_length)
+    ego_interp = np.zeros((target_length, ego_motion.shape[1]))
+    other_interp = np.zeros((target_length, other_motion.shape[1]))
+    for i in range(ego_motion.shape[1]):
+        ego_interp[:, i] = np.interp(t_common, t_ego, ego_motion[:, i])
+        other_interp[:, i] = np.interp(t_common, t_other, other_motion[:, i])
+
+    # Calculate the conflict point (closest approach)
+    distances = np.linalg.norm(ego_interp[:, :2] - other_interp[:, :2], axis=1)
+    min_idx = np.argmin(distances)
+    conflict_point = (ego_interp[min_idx, :2] + other_interp[min_idx, :2]) / 2
+
+    # Plot the trajectories and conflict point
+    plt.figure(figsize=(6, 6))
+    plt.plot(ego_interp[:, 0], ego_interp[:, 1], label='Ego Vehicle', color='blue')
+    plt.plot(other_interp[:, 0], other_interp[:, 1], label='Other Vehicle', color='orange')
+    plt.scatter(conflict_point[0], conflict_point[1], s=200, facecolors='none', edgecolors='red', linewidths=2, label='Conflict Point')
+    plt.title(
+        f"Scenario {scenario_id}\n"
+        f"Actual: {conflict_map[label]} | Predicted: {conflict_map[prediction]} (Prob: {prob:.2f})"
+    )
+    plt.xlabel("X Position")
+    plt.ylabel("Y Position")
+    plt.legend()
+    plt.axis('equal')
+    plt.show()
+
+    print(f"Scenario {scenario_id}:")
+    print(f"  Actual: {conflict_map[label]}")
+    print(f"  Predicted: {conflict_map[prediction]} (Probability: {prob:.3f})")
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+# --- Select a scenario to visualize ---
+scenario_idx = np.random.randint(0, len(test_data))
+scenario_id = test_data.iloc[scenario_idx]['log_id']
+scenario_data = analyze_intersection_scenario(scenario_id, root_av)
+
+if scenario_data and 'motion_data' in scenario_data:
+    features, label = prepare_logistic_regression_data(scenario_data)
+    prediction, prob = predict_collision(model, scaler, scenario_data)
+    conflict_map = {0: 'No Conflict', 1: 'Conflict'}
+    feature_names = [
+        "Min Distance", "Avg Rel Velocity", "Min Time to Intersection",
+        "Avg Yaw Angle Diff", "Avg Speed Diff", "Time to Closest Approach", "Avg Rel Acc"
+    ]
+
+    fig, axs = plt.subplots(1, 2, figsize=(12, 4))
+
+    # 1. Model Input Features
+    axs[0].bar(feature_names, features)
+    axs[0].set_title("Model Input Features")
+    axs[0].set_ylabel("Feature Value")
+    axs[0].tick_params(axis='x', rotation=45)
+
+    # 2. Actual vs. Predicted
+    axs[1].bar(['Actual', 'Predicted'], [label, prediction], color=['blue', 'orange'])
+    axs[1].set_title("Actual vs. Predicted")
+    axs[1].set_ylabel("Class (0=No Conflict, 1=Conflict)")
+    axs[1].set_ylim(-0.1, 1.1)
+    axs[1].set_xticks([0, 1])
+    axs[1].set_xticklabels(['Actual', 'Predicted'])
+
+    plt.tight_layout()
+    plt.show()
+
+    # Now show the scenario visualization as a separate plot
+    if 'visualize_scenario' in globals():
+        visualize_scenario(scenario_id, root_av)
+    else:
+        print("No scenario visualization function found.")
+
+    print(f"Scenario {scenario_id}:")
+    print(f"  Actual: {conflict_map[label]}")
+    print(f"  Predicted: {conflict_map[prediction]} (Probability: {prob:.3f})")
+else:
+    print(f"Scenario {scenario_id}: No motion data available, skipping.")
+
+conflict_map = {0: 'No Conflict', 1: 'Conflict'}
+visualize_scenario_with_prediction(scenario_id, root_av, model, scaler, conflict_map)
