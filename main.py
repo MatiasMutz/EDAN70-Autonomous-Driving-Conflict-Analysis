@@ -901,7 +901,9 @@ results_df = pd.DataFrame({
 })
 
 print("\nCounts of each risk label in test predictions:")
-print(results_df['Risk Label'].value_counts())
+counts = results_df['Risk Label'].value_counts()
+for label, count in counts.items():
+    print(f"{label}: {count}")
 
 # Save to CSV
 results_df.to_csv('all_test_predictions.csv', index=False)
@@ -954,6 +956,37 @@ def visualize_scenario_with_prediction(scenario_id, root_av, model, scaler, conf
     plt.figure(figsize=(6, 6))
     plt.plot(ego_interp[:, 0], ego_interp[:, 1], label='Ego Vehicle', color='blue')
     plt.plot(other_interp[:, 0], other_interp[:, 1], label='Other Vehicle', color='orange')
+    
+    # Add arrows to the trajectories
+    arrow_spacing = 10
+    for i in range(0, len(ego_interp), arrow_spacing):
+        x = ego_interp[i, 0]
+        y = ego_interp[i, 1]
+        yaw = ego_interp[i, 6]
+        dx = np.cos(yaw)
+        dy = np.sin(yaw)
+        plt.quiver(x, y, dx, dy, 
+                  scale=20,
+                  color='blue',
+                  width=0.005,
+                  headwidth=5,
+                  headlength=5,
+                  alpha=0.5)
+
+    for i in range(0, len(other_interp), arrow_spacing):
+        x = other_interp[i, 0]
+        y = other_interp[i, 1]
+        yaw = other_interp[i, 6]
+        dx = np.cos(yaw)
+        dy = np.sin(yaw)
+        plt.quiver(x, y, dx, dy, 
+                  scale=20,
+                  color='orange',
+                  width=0.005,
+                  headwidth=5,
+                  headlength=5,
+                  alpha=0.5)
+
     plt.scatter(conflict_point[0], conflict_point[1], s=200, facecolors='none', edgecolors='red', linewidths=2, label='Conflict Point')
     plt.title(
         f"Scenario {scenario_id}\n"

@@ -11,4 +11,5 @@ dependencies:
   - jupyter
   - pip
   - pandas
-  - scikit-learn 
+  - scikit-learn
+  - imbalanced-learn 
