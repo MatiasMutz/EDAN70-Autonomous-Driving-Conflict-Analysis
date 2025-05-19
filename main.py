@@ -179,12 +179,12 @@ if not isinstance(axs, np.ndarray):
     axs = [axs]
 
 for i, scenario_id in enumerate(sample_scenarios[:5]):
-    #_, _ = visualize_scenario(scenario_id, root_av)
+    _, _ = visualize_scenario(scenario_id, root_av)
     if i < len(axs):
         axs[i].set_title(f'Scenario {i+1}')
 
-#plt.tight_layout()
-#plt.show()
+plt.tight_layout()
+plt.show()
 
 
 # Constants for conflict analysis
@@ -660,7 +660,7 @@ def train_logistic_regression_binary(intersection_cases, root_path):
     from sklearn.model_selection import train_test_split, cross_val_score
     from sklearn.metrics import (
         classification_report, confusion_matrix, ConfusionMatrixDisplay,
-        roc_auc_score, roc_curve, precision_recall_curve, average_precision_score
+        roc_auc_score, roc_curve, precision_recall_curve, average_precision_score, accuracy_score, precision_score, recall_score
     )
     from imblearn.over_sampling import SMOTE
     import numpy as np
@@ -694,7 +694,7 @@ def train_logistic_regression_binary(intersection_cases, root_path):
     print(f"Collision     (1): {np.sum(y == 1)}")
 
     if np.sum(y == 1) < 10 or np.sum(y == 0) < 10:
-        print("\n⚠️ Warning: Very imbalanced dataset. Proceeding anyway.")
+        print("\nWarning: Very imbalanced dataset. Proceeding anyway.")
 
     # ---------------------------
     # Step 2: Train-Test Split
@@ -781,8 +781,19 @@ def train_logistic_regression_binary(intersection_cases, root_path):
     # ---------------------------
     test_data = pd.DataFrame({'log_id': ids_test})
 
-    return model, scaler, X_test, y_test, y_pred, y_prob, test_data
+    y_train_pred = model.predict(X_train_scaled)
+    train_acc = accuracy_score(y_train_res, y_train_pred)
+    train_prec = precision_score(y_train_res, y_train_pred)
+    train_rec = recall_score(y_train_res, y_train_pred)
 
+    test_acc = accuracy_score(y_test, y_pred)
+    test_prec = precision_score(y_test, y_pred)
+    test_rec = recall_score(y_test, y_pred)
+
+    train_metrics = {'Accuracy': train_acc, 'Precision': train_prec, 'Recall': train_rec}
+    test_metrics = {'Accuracy': test_acc, 'Precision': test_prec, 'Recall': test_rec}
+
+    return model, scaler, X_test, y_test, y_pred, y_prob, test_data, train_metrics, test_metrics
 
 
 def predict_collision(model, scaler, scenario_data):
@@ -864,7 +875,7 @@ all_data = pd.DataFrame(available_scenarios)
 
 # Step 2: Train logistic regression model
 print("\nTraining logistic regression model...")
-model, scaler, X_test, y_test, y_pred, y_prob, test_data = train_logistic_regression_binary(all_data, root_av)
+model, scaler, X_test, y_test, y_pred, y_prob, test_data, train_metrics, test_metrics = train_logistic_regression_binary(all_data, root_av)
 print("Model training complete.")
 
 # Step 3: Predict test scenarios
@@ -885,7 +896,7 @@ for _, case in test_data.iterrows():
             prediction = model.predict(features_scaled)[0]
             probability = model.predict_proba(features_scaled)[0][1]  # Probability of collision
         except Exception as e:
-            print(f"⚠️ Model error on scenario {scenario_id}: {str(e)}")
+            print(f"Model error on scenario {scenario_id}: {str(e)}")
             prediction, probability = predict_collision(None, None, test_scenario)
 
         risk_label = 'collision' if prediction == 1 else 'no collision'
@@ -914,6 +925,18 @@ results_df['Confidence'].hist(bins=50)
 plt.title("Distribution of Predicted Collision Probabilities")
 plt.xlabel("Predicted Probability")
 plt.ylabel("Frequency")
+plt.show()
+
+# Table of metrics
+metrics_df = pd.DataFrame([train_metrics, test_metrics], index=['Train', 'Validation'])
+display(metrics_df)
+
+# Accuracy plot
+plt.figure()
+plt.bar(['Training Accuracy', 'Validation Accuracy'], [train_metrics['Accuracy'], test_metrics['Accuracy']], color=['blue', 'orange'])
+plt.ylim(0, 1)
+plt.ylabel('Accuracy')
+plt.title('Training vs. Validation Accuracy')
 plt.show()
 
 # Display the DataFrame
@@ -951,12 +974,22 @@ def visualize_scenario_with_prediction(scenario_id, root_av, model, scaler, conf
     distances = np.linalg.norm(ego_interp[:, :2] - other_interp[:, :2], axis=1)
     min_idx = np.argmin(distances)
     conflict_point = (ego_interp[min_idx, :2] + other_interp[min_idx, :2]) / 2
+    conflict_time = t_common[min_idx]
 
     # Plot the trajectories and conflict point
     plt.figure(figsize=(6, 6))
     plt.plot(ego_interp[:, 0], ego_interp[:, 1], label='Ego Vehicle', color='blue')
     plt.plot(other_interp[:, 0], other_interp[:, 1], label='Other Vehicle', color='orange')
     
+
+    # Mark the start position (first point)
+    plt.scatter(ego_interp[0, 0], ego_interp[0, 1], marker='x', color='blue', s=100, label='Ego Start')
+    plt.scatter(other_interp[0, 0], other_interp[0, 1], marker='x', color='orange', s=100, label='Other Start')
+
+    # Mark the position at the conflict point (closest approach)
+    plt.scatter(ego_interp[min_idx, 0], ego_interp[min_idx, 1], marker='o', color='blue', s=100, label='Ego at Conflict')
+    plt.scatter(other_interp[min_idx, 0], other_interp[min_idx, 1], marker='o', color='orange', s=100, label='Other at Conflict')
+
     # Add arrows to the trajectories
     arrow_spacing = 10
     for i in range(0, len(ego_interp), arrow_spacing):
@@ -990,7 +1023,7 @@ def visualize_scenario_with_prediction(scenario_id, root_av, model, scaler, conf
     plt.scatter(conflict_point[0], conflict_point[1], s=200, facecolors='none', edgecolors='red', linewidths=2, label='Conflict Point')
     plt.title(
         f"Scenario {scenario_id}\n"
-        f"Actual: {conflict_map[label]} | Predicted: {conflict_map[prediction]} (Prob: {prob:.2f})"
+        f"Actual: {conflict_map[label]} | Predicted: {conflict_map[prediction]}"
     )
     plt.xlabel("X Position")
     plt.ylabel("Y Position")
@@ -1000,15 +1033,21 @@ def visualize_scenario_with_prediction(scenario_id, root_av, model, scaler, conf
 
     print(f"Scenario {scenario_id}:")
     print(f"  Actual: {conflict_map[label]}")
-    print(f"  Predicted: {conflict_map[prediction]} (Probability: {prob:.3f})")
-
+    print(f"  Predicted: {conflict_map[prediction]}")
+    print(f"  Intersection Point: {conflict_point}")
+    print(f"  Conflict Time: {conflict_time:.2f}")
 
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 
 # --- Select a scenario to visualize ---
-scenario_idx = np.random.randint(0, len(test_data))
-scenario_id = test_data.iloc[scenario_idx]['log_id']
+scenario_idx = (np.random.randint(0, len(test_data)))
+scenario_id = 3660
+    #(test_data.iloc)[scenario_idx]['log_id']
+    #3660 collision detection
+    #
+    #400 collision detection incorrect
 scenario_data = analyze_intersection_scenario(scenario_id, root_av)
 
 if scenario_data and 'motion_data' in scenario_data:
@@ -1028,15 +1067,32 @@ if scenario_data and 'motion_data' in scenario_data:
     axs[0].set_ylabel("Feature Value")
     axs[0].tick_params(axis='x', rotation=45)
 
-    # 2. Actual vs. Predicted
-    axs[1].bar(['Actual', 'Predicted'], [label, prediction], color=['blue', 'orange'])
-    axs[1].set_title("Actual vs. Predicted")
-    axs[1].set_ylabel("Class (0=No Conflict, 1=Conflict)")
-    axs[1].set_ylim(-0.1, 1.1)
-    axs[1].set_xticks([0, 1])
-    axs[1].set_xticklabels(['Actual', 'Predicted'])
+    #2. Model Coefficients
+    coefficients = model.coef_[0]
 
-    plt.tight_layout()
+    # Sort features by absolute value of coefficients
+    sorted_idx = np.argsort(np.abs(coefficients))[::-1]
+
+    # Colors: green for positive, red for negative
+    colors = ['green' if c > 0 else 'red' for c in coefficients[sorted_idx]]
+
+    plt.figure(figsize=(10, 6))
+    bars = plt.barh(
+        np.array(feature_names)[sorted_idx],
+        coefficients[sorted_idx],
+        color=colors
+    )
+
+    plt.xlabel('Coefficient Value')
+    plt.title('Feature Importance (Logistic Regression Coefficients)')
+    plt.gca().invert_yaxis()
+    plt.grid(True, axis='x')
+
+    # Create legend
+    pos_patch = mpatches.Patch(color='green', label='Increases collision risk')
+    neg_patch = mpatches.Patch(color='red', label='Decreases collision risk')
+    plt.legend(handles=[pos_patch, neg_patch], loc='lower right')
+
     plt.show()
 
     # Now show the scenario visualization as a separate plot
