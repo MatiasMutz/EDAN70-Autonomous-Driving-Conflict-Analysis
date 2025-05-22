@@ -78,12 +78,14 @@ def get_scenario_filename(scenario_id, root_path):
     # Try each format
     for format in possible_formats:
         if format in all_files:
+            print(f"Found match: {format}")
             return format
     
     # If no exact match, try to find any file containing the scenario number
     matching_files = [f for f in all_files if str(int(scenario_id)) in f and f.endswith('.zarr')]
     
     if matching_files:
+        #print(f"Found partial match: {matching_files[0]}")
         return matching_files[0]
     
     return None
@@ -673,15 +675,22 @@ def train_logistic_regression_binary(intersection_cases, root_path):
     X = []
     y = []
     ids = []
+    valid_scenarios = []
 
+    print("\nExtracting features from valid scenarios...")
     for _, case in intersection_cases.iterrows():
         scenario_id = case['log_id']
         features = analyze_intersection_scenario(scenario_id, root_path)
         if features:
-            scenario_features, collision_label = prepare_logistic_regression_data(features)
-            X.append(scenario_features)
-            y.append(collision_label)  # 1: collision, 0: no collision
-            ids.append(scenario_id)
+            try:
+                scenario_features, collision_label = prepare_logistic_regression_data(features)
+                X.append(scenario_features)
+                y.append(collision_label)
+                ids.append(scenario_id)
+                valid_scenarios.append(case)
+            except Exception as e:
+                print(f"Error processing scenario {scenario_id}: {str(e)}")
+                continue
 
     X = np.array(X)
     y = np.array(y)
@@ -689,12 +698,9 @@ def train_logistic_regression_binary(intersection_cases, root_path):
     if len(X) == 0:
         raise ValueError("No valid data extracted. Check feature extraction functions.")
 
-    print("\nClass distribution in dataset:")
+    print("\nClass distribution in original dataset:")
     print(f"No Collision (0): {np.sum(y == 0)}")
     print(f"Collision     (1): {np.sum(y == 1)}")
-
-    if np.sum(y == 1) < 10 or np.sum(y == 0) < 10:
-        print("\nWarning: Very imbalanced dataset. Proceeding anyway.")
 
     # ---------------------------
     # Step 2: Train-Test Split
@@ -709,12 +715,14 @@ def train_logistic_regression_binary(intersection_cases, root_path):
     # ---------------------------
     # Step 3: SMOTE Balancing
     # ---------------------------
+    print("\nApplying SMOTE to balance classes...")
     sm = SMOTE(random_state=42)
     X_train_res, y_train_res = sm.fit_resample(X_train, y_train)
 
-    print("\nAfter SMOTE:")
+    print("\nClass distribution after SMOTE:")
     print(f"No Collision (0): {np.sum(y_train_res == 0)}")
     print(f"Collision     (1): {np.sum(y_train_res == 1)}")
+    print(f"Note: {len(y_train_res) - len(y_train)} synthetic samples were generated")
 
     # ---------------------------
     # Step 4: Scale Features
@@ -1103,9 +1111,422 @@ if scenario_data and 'motion_data' in scenario_data:
 
     print(f"Scenario {scenario_id}:")
     print(f"  Actual: {conflict_map[label]}")
-    print(f"  Predicted: {conflict_map[prediction]} (Probability: {prob:.3f})")
+    print(f"  Predicted: {conflict_map[prediction]} (Prob: {prob:.3f})")
 else:
     print(f"Scenario {scenario_id}: No motion data available, skipping.")
 
 conflict_map = {0: 'No Conflict', 1: 'Conflict'}
 visualize_scenario_with_prediction(scenario_id, root_av, model, scaler, conflict_map)
+
+def extract_first_frame_features(scenario_data):
+    """
+    Extracts features from the first frame of a scenario for collision prediction.
+    
+    Args:
+        scenario_data (dict): Dictionary containing scenario features including:
+            - motion_data: Vehicle motion states
+            - slices: Indices marking different vehicles' data
+            
+    Returns:
+        numpy.array: Feature vector containing features from the first frame
+    """
+    # Get ego vehicle (AV) and other vehicle initial states
+    ego_motion = scenario_data['motion_data'][scenario_data['slices'][0]:scenario_data['slices'][1]]
+    other_motion = scenario_data['motion_data'][scenario_data['slices'][1]:scenario_data['slices'][2]]
+    
+    # Get initial positions and velocities
+    ego_pos = ego_motion[0, :2]  # [x, y]
+    ego_vel = ego_motion[0, 2:4]  # [vx, vy]
+    other_pos = other_motion[0, :2]
+    other_vel = other_motion[0, 2:4]
+    
+    # Calculate initial features
+    initial_distance = np.linalg.norm(ego_pos - other_pos)
+    relative_velocity = np.linalg.norm(ego_vel - other_vel)
+    
+    # Calculate angle between vehicles' velocities
+    ego_heading = np.arctan2(ego_vel[1], ego_vel[0])
+    other_heading = np.arctan2(other_vel[1], other_vel[0])
+    heading_diff = np.abs(ego_heading - other_heading)
+    heading_diff = np.minimum(heading_diff, 2*np.pi - heading_diff)
+    
+    # Calculate speed difference
+    ego_speed = np.linalg.norm(ego_vel)
+    other_speed = np.linalg.norm(other_vel)
+    speed_diff = np.abs(ego_speed - other_speed)
+    
+    # Calculate time to closest approach (simplified)
+    # This is a rough estimate based on initial conditions
+    rel_pos = ego_pos - other_pos
+    rel_vel = ego_vel - other_vel
+    rel_vel_norm = np.linalg.norm(rel_vel)
+    
+    # Handle the case where relative velocity is very small
+    if rel_vel_norm > 0.1:  # Avoid division by zero
+        time_to_closest = -np.dot(rel_pos, rel_vel) / (rel_vel_norm ** 2)
+        # Bound the time to closest to reasonable values
+        time_to_closest = np.clip(time_to_closest, -100, 100)
+    else:
+        time_to_closest = 100  # Use a large positive value instead of infinity
+    
+    # Combine features into feature vector
+    features = np.array([
+        np.clip(initial_distance, 0, 1000),          # Initial distance between vehicles
+        np.clip(relative_velocity, 0, 100),          # Initial relative velocity
+        heading_diff,                                # Initial heading difference
+        np.clip(speed_diff, 0, 100),                 # Initial speed difference
+        time_to_closest,                             # Estimated time to closest approach
+        np.clip(ego_speed, 0, 100),                  # Ego vehicle speed
+        np.clip(other_speed, 0, 100)                 # Other vehicle speed
+    ])
+    
+    # Ensure no infinite values
+    features = np.nan_to_num(features, nan=0.0, posinf=100.0, neginf=-100.0)
+    
+    return features
+
+def predict_collision_first_frame(model, scaler, scenario_data):
+    """
+    Predicts collision (1) or no collision (0) for a given scenario using only the first frame.
+    
+    Args:
+        model: Trained logistic regression model
+        scaler: StandardScaler used to normalize features
+        scenario_data: Dictionary containing scenario information
+        
+    Returns:
+        tuple: (prediction, probability) where:
+            - prediction: 1 for collision, 0 for no collision
+            - probability: predicted probability of collision
+    """
+    try:
+        # Extract features from first frame
+        features = extract_first_frame_features(scenario_data)
+        
+        # Scale features
+        features_scaled = scaler.transform(features.reshape(1, -1))
+        
+        # Make prediction
+        prediction = model.predict(features_scaled)[0]
+        probability = model.predict_proba(features_scaled)[0][1]  # Probability of class '1' (collision)
+        
+        return prediction, probability
+    except Exception as e:
+        print(f"Error in first frame prediction: {str(e)}")
+        return 0, 0.0  # Default to no collision if there's an error
+
+
+def extract_initial_frames_features(scenario_data, n_frames=15):
+    """
+    Extrae features usando los primeros n_frames de cada vehículo.
+    """
+    ego_motion = scenario_data['motion_data'][scenario_data['slices'][0]:scenario_data['slices'][1]]
+    other_motion = scenario_data['motion_data'][scenario_data['slices'][1]:scenario_data['slices'][2]]
+
+    # Asegurarse de que hay suficientes frames
+    n = min(n_frames, len(ego_motion), len(other_motion))
+    ego = ego_motion[:n]
+    other = other_motion[:n]
+
+    # Distancia mínima y promedio
+    distances = np.linalg.norm(ego[:, :2] - other[:, :2], axis=1)
+    min_dist = np.min(distances)
+    mean_dist = np.mean(distances)
+
+    # Velocidad relativa promedio
+    rel_vels = np.linalg.norm(ego[:, 2:4] - other[:, 2:4], axis=1)
+    mean_rel_vel = np.mean(rel_vels)
+
+    # Ángulo relativo promedio
+    ego_headings = np.arctan2(ego[:, 3], ego[:, 2])
+    other_headings = np.arctan2(other[:, 3], other[:, 2])
+    heading_diffs = np.abs(ego_headings - other_headings)
+    heading_diffs = np.minimum(heading_diffs, 2*np.pi - heading_diffs)
+    mean_heading_diff = np.mean(heading_diffs)
+
+    # Diferencia de velocidad promedio
+    ego_speeds = np.linalg.norm(ego[:, 2:4], axis=1)
+    other_speeds = np.linalg.norm(other[:, 2:4], axis=1)
+    speed_diffs = np.abs(ego_speeds - other_speeds)
+    mean_speed_diff = np.mean(speed_diffs)
+
+    # Aceleración relativa promedio
+    rel_accs = np.linalg.norm(ego[:, 4:6] - other[:, 4:6], axis=1)
+    mean_rel_acc = np.mean(rel_accs)
+
+    # Puedes agregar más features aquí si tienes información de la intersección, etc.
+
+    features = np.array([
+        min_dist,
+        mean_dist,
+        mean_rel_vel,
+        mean_heading_diff,
+        mean_speed_diff,
+        mean_rel_acc,
+        ego_speeds[0],  # velocidad inicial ego
+        other_speeds[0] # velocidad inicial otro
+    ])
+    features = np.nan_to_num(features, nan=0.0, posinf=100.0, neginf=-100.0)
+    return features
+
+
+def train_and_compare_models(intersection_cases, root_path):
+    """
+    Trains and compares two models:
+    1. Full trajectory model (current approach)
+    2. First frame model (new approach)
+    
+    Args:
+        intersection_cases: DataFrame containing scenario metadata
+        root_path: Root directory containing scenario files
+    
+    Returns:
+        tuple: (full_model, full_scaler, first_frame_model, first_frame_scaler, comparison_results)
+    """
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import classification_report, confusion_matrix
+    import pandas as pd
+    import numpy as np
+    
+    print("\nPreparing data for both models...")
+    
+    # First, filter for scenarios that actually exist
+    valid_scenarios = []
+    for _, case in intersection_cases.iterrows():
+        scenario_id = case['log_id']
+        filename = get_scenario_filename(scenario_id, root_path)
+        if filename is not None:
+            valid_scenarios.append(case)
+    
+    print(f"\nFound {len(valid_scenarios)} valid scenarios out of {len(intersection_cases)} total scenarios")
+    
+    # Prepare data for full trajectory model
+    X_full = []
+    y_full = []
+    ids_full = []
+    
+    # Prepare data for first frame model
+    X_first = []
+    y_first = []
+    ids_first = []
+    
+    X_initial = []
+    y_initial = []
+    ids_initial = []
+
+    for case in valid_scenarios:
+        scenario_id = case['log_id']
+        features = analyze_intersection_scenario(scenario_id, root_path)
+        
+        if features:
+            # Full trajectory features
+            full_features, collision_label = prepare_logistic_regression_data(features)
+            X_full.append(full_features)
+            y_full.append(collision_label)
+            ids_full.append(scenario_id)
+            
+            # First frame features
+            first_features = extract_first_frame_features(features)
+            X_first.append(first_features)
+            y_first.append(collision_label)
+            ids_first.append(scenario_id)
+
+            # Initial N frames features
+            initial_features = extract_initial_frames_features(features, n_frames=5)
+            X_initial.append(initial_features)
+            y_initial.append(collision_label)
+            ids_initial.append(scenario_id)
+    
+    if len(X_full) == 0:
+        raise ValueError("No valid data could be extracted from any scenarios")
+    
+    X_full = np.array(X_full)
+    y_full = np.array(y_full)
+    X_first = np.array(X_first)
+    y_first = np.array(y_first)
+    X_initial = np.array(X_initial)
+    y_initial = np.array(y_initial)
+    
+    print(f"\nTotal scenarios processed: {len(y_full)}")
+    print(f"Collision scenarios: {np.sum(y_full == 1)}")
+    print(f"No collision scenarios: {np.sum(y_full == 0)}")
+    
+    # Split data for both models
+    X_full_train, X_full_test, y_full_train, y_full_test, ids_full_train, ids_full_test = train_test_split(
+        X_full, y_full, ids_full, test_size=0.2, random_state=42, stratify=y_full
+    )
+    
+    X_first_train, X_first_test, y_first_train, y_first_test, ids_first_train, ids_first_test = train_test_split(
+        X_first, y_first, ids_first, test_size=0.2, random_state=42, stratify=y_first
+    )
+    
+    # Train full trajectory model
+    print("\nTraining full trajectory model...")
+    full_scaler = StandardScaler()
+    X_full_train_scaled = full_scaler.fit_transform(X_full_train)
+    X_full_test_scaled = full_scaler.transform(X_full_test)
+    
+    full_model = LogisticRegression(random_state=42, max_iter=1000, class_weight='balanced')
+    full_model.fit(X_full_train_scaled, y_full_train)
+    
+    # Train first frame model
+    print("\nTraining first frame model...")
+    first_scaler = StandardScaler()
+    X_first_train_scaled = first_scaler.fit_transform(X_first_train)
+    X_first_test_scaled = first_scaler.transform(X_first_test)
+    
+    first_model = LogisticRegression(random_state=42, max_iter=1000, class_weight='balanced')
+    first_model.fit(X_first_train_scaled, y_first_train)
+    
+    # Evaluate both models
+    print("\nEvaluating models...")
+    
+    # Full trajectory model predictions
+    y_full_pred = full_model.predict(X_full_test_scaled)
+    y_full_prob = full_model.predict_proba(X_full_test_scaled)[:, 1]
+    
+    # First frame model predictions
+    y_first_pred = first_model.predict(X_first_test_scaled)
+    y_first_prob = first_model.predict_proba(X_first_test_scaled)[:, 1]
+    
+    # Create comparison DataFrame
+    comparison_results = pd.DataFrame({
+        'Scenario ID': ids_full_test,
+        'Actual': y_full_test,
+        'Full Model Prediction': y_full_pred,
+        'Full Model Probability': y_full_prob,
+        'First Frame Prediction': y_first_pred,
+        'First Frame Probability': y_first_prob
+    })
+    
+    # Print comparison metrics
+    print("\nFull Trajectory Model Performance:")
+    print(classification_report(y_full_test, y_full_pred))
+    
+    print("\nFirst Frame Model Performance:")
+    print(classification_report(y_first_test, y_first_pred))
+    
+    # Calculate agreement between models
+    agreement = np.mean(y_full_pred == y_first_pred)
+    print(f"\nModel Agreement: {agreement:.2f}%")
+    
+    # Analyze disagreements
+    disagreements = comparison_results[y_full_pred != y_first_pred]
+    print(f"\nNumber of disagreements: {len(disagreements)}")
+    
+    if len(disagreements) > 0:
+        print("\nSample of disagreements:")
+        print(disagreements[['Scenario ID', 'Actual', 'Full Model Prediction', 'First Frame Prediction']].head())
+    
+    # Train initial frames model
+    X_initial_train, X_initial_test, y_initial_train, y_initial_test, ids_initial_train, ids_initial_test = train_test_split(
+        X_initial, y_initial, ids_initial, test_size=0.2, random_state=42, stratify=y_initial
+    )
+
+    initial_scaler = StandardScaler()
+    X_initial_train_scaled = initial_scaler.fit_transform(X_initial_train)
+    X_initial_test_scaled = initial_scaler.transform(X_initial_test)
+
+    initial_model = LogisticRegression(random_state=42, max_iter=1000, class_weight='balanced')
+    initial_model.fit(X_initial_train_scaled, y_initial_train)
+
+    # Evaluación
+    y_initial_pred = initial_model.predict(X_initial_test_scaled)
+    y_initial_prob = initial_model.predict_proba(X_initial_test_scaled)[:, 1]
+
+    print('\nInitial N-Frames Model Performance:')
+    print(classification_report(y_initial_test, y_initial_pred))
+
+    return full_model, full_scaler, first_model, first_scaler, initial_model, initial_scaler, comparison_results
+
+def visualize_model_comparison(scenario_id, root_path, full_model, full_scaler, first_model, first_scaler, initial_model, initial_scaler, n_frames=5):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    scenario_data = analyze_intersection_scenario(scenario_id, root_path)
+    if not scenario_data:
+        print(f"Scenario {scenario_id} not found")
+        return
+
+    # Full trajectory
+    full_features, _ = prepare_logistic_regression_data(scenario_data)
+    full_pred, full_prob = predict_collision(full_model, full_scaler, scenario_data)
+
+    # First frame
+    first_features = extract_first_frame_features(scenario_data)
+    first_pred, first_prob = predict_collision_first_frame(first_model, first_scaler, scenario_data)
+
+    # Initial N frames
+    initial_features = extract_initial_frames_features(scenario_data, n_frames=n_frames)
+    initial_features_scaled = initial_scaler.transform(initial_features.reshape(1, -1))
+    initial_pred = initial_model.predict(initial_features_scaled)[0]
+    initial_prob = initial_model.predict_proba(initial_features_scaled)[0][1]
+
+    ego_motion = scenario_data['motion_data'][scenario_data['slices'][0]:scenario_data['slices'][1]]
+    other_motion = scenario_data['motion_data'][scenario_data['slices'][1]:scenario_data['slices'][2]]
+
+    fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+
+    # 1. Full trajectory
+    axs[0].plot(ego_motion[:, 0], ego_motion[:, 1], 'b-', label='Ego Vehicle')
+    axs[0].plot(other_motion[:, 0], other_motion[:, 1], 'r-', label='Other Vehicle')
+    axs[0].scatter(ego_motion[0, 0], ego_motion[0, 1], c='b', marker='o', label='Start')
+    axs[0].scatter(other_motion[0, 0], other_motion[0, 1], c='r', marker='o')
+    axs[0].set_title(f'Full Trajectory Model\nPrediction: {full_pred} (Prob: {full_prob:.2f})')
+    axs[0].legend()
+    axs[0].grid(True)
+
+    # 2. First frame
+    axs[1].scatter(ego_motion[0, 0], ego_motion[0, 1], c='b', marker='o', label='Ego Start')
+    axs[1].scatter(other_motion[0, 0], other_motion[0, 1], c='r', marker='o', label='Other Start')
+    # Flechas de dirección
+    axs[1].arrow(ego_motion[0, 0], ego_motion[0, 1], ego_motion[0, 2], ego_motion[0, 3], color='b', head_width=0.2)
+    axs[1].arrow(other_motion[0, 0], other_motion[0, 1], other_motion[0, 2], other_motion[0, 3], color='r', head_width=0.2)
+    axs[1].set_title(f'First Frame Model\nPrediction: {first_pred} (Prob: {first_prob:.2f})')
+    axs[1].legend()
+    axs[1].grid(True)
+
+    # 3. Initial N frames
+    ego_n = ego_motion[:n_frames]
+    other_n = other_motion[:n_frames]
+    axs[2].plot(ego_n[:, 0], ego_n[:, 1], 'b-o', label='Ego (N frames)')
+    axs[2].plot(other_n[:, 0], other_n[:, 1], 'r-o', label='Other (N frames)')
+    # Flechas de dirección en el último frame
+    axs[2].arrow(ego_n[-1, 0], ego_n[-1, 1], ego_n[-1, 2], ego_n[-1, 3], color='b', head_width=0.2)
+    axs[2].arrow(other_n[-1, 0], other_n[-1, 1], other_n[-1, 2], other_n[-1, 3], color='r', head_width=0.2)
+    axs[2].set_title(f'Initial {n_frames} Frames Model\nPrediction: {initial_pred} (Prob: {initial_prob:.2f})')
+    axs[2].legend()
+    axs[2].grid(True)
+
+    # Si predice colisión, marcar el punto de mínima distancia
+    if initial_pred == 1:
+        distances = np.linalg.norm(ego_n[:, :2] - other_n[:, :2], axis=1)
+        min_idx = np.argmin(distances)
+        collision_point = (ego_n[min_idx, :2] + other_n[min_idx, :2]) / 2
+        axs[2].scatter(*collision_point, s=200, facecolors='none', edgecolors='magenta', linewidths=2, label='Predicted Collision')
+        axs[2].legend()
+
+    plt.suptitle(f'Scenario {scenario_id} - Model Comparison')
+    plt.tight_layout()
+    plt.show()
+
+# Example usage:
+print("\nTraining and comparing models...")
+full_model, full_scaler, first_model, first_scaler, initial_model, initial_scaler, comparison_results = train_and_compare_models(intersection_cases, root_av)
+
+# Save comparison results
+comparison_results.to_csv('model_comparison_results.csv', index=False)
+print("\nComparison results saved to 'model_comparison_results.csv'")
+
+# Visualize some example scenarios
+print("\nVisualizing example scenarios...")
+for scenario_id in comparison_results['Scenario ID'].head(3):
+    visualize_model_comparison(
+        scenario_id, root_av,
+        full_model, full_scaler,
+        first_model, first_scaler,
+        initial_model, initial_scaler,
+        n_frames=15
+    )
