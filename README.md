@@ -16,7 +16,7 @@ This project uses Conda for environment management. Follow these steps to set up
 
 2. Activate the environment:
    ```bash
-   conda activate conflict-resolution
+   conda activate conflict-analysis
    ```
    If on mac and does not work you are probably using zsh terminal run the following and then again command above:
    ```bash
